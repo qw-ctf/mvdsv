@@ -109,7 +109,7 @@ endif()
 ######################################################################################################
 
 # Set base compiler flags
-set(CFLAGS -Wall)
+set(CFLAGS -Wall -O0 -g)
 set(LFLAGS)
 
 

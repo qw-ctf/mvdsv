@@ -91,6 +91,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define MVD_PEXT1_DEBUG_ANTILAG     (1 <<  4) // Send predicted positions to server (compare to antilagged positions)
 #define MVD_PEXT1_HIDDEN_MESSAGES   (1 <<  5) // dem_multiple(0) packets are in format (<length> <type-id>+ <packet-data>)*
 #define MVD_PEXT1_SERVERSIDEWEAPON2 (1 <<  6) // Server-side weapon selection supports clc_mvd_weapon_full_impulse
+#define MVD_PEXT1_TRANS             (1 <<  7) // Fixed FTE_PEXT_TRANS, ezQuake/mvdsv didn't write/read PF_EXTRA_PFS.
 
 #if defined(MVD_PEXT1_DEBUG_ANTILAG) || defined(MVD_PEXT1_DEBUG_WEAPON)
 #define MVD_PEXT1_DEBUG
@@ -316,8 +317,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // bits 11..13 are player move type bits (ZQuake extension)
 #define PF_PMC_SHIFT	11
 #define	PF_PMC_MASK		7
-#define	PF_ONGROUND		(1<<14)			// ZQuake extension
-#define	PF_SOLID		(1<<15)			// ZQuake extension
+#define	PF_ONGROUND		(1<<22)			// or 14, ZQuake extension
+#define	PF_SOLID		(1<<23)			// or 15, ZQuake extension
 
 // encoded player move types
 #define PMC_NORMAL				0		// normal ground movement
@@ -388,7 +389,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef PROTOCOL_VERSION_FTE
 #define U_FTE_EVENMORE	(1<<7)		//extension info follows
 
-//fte extensions
+// fte extensions
+#define PF_EXTRA_PFS (1 << 15)		//used if TRANS overflows into extra playerflags
+//
 //EVENMORE flags
 #ifdef FTE_PEXT_SCALE
 #define U_FTE_SCALE		(1<<0)		//scaler of alias models
@@ -492,10 +495,7 @@ typedef struct entity_state_s
 	int		colormap;
 	int		skinnum;
 	int		effects;
-#ifndef SERVERONLY
-// Our server does not use it.
 	byte	trans;
-#endif
 } entity_state_t;
 
 #define	MAX_PACKET_ENTITIES	64	// doesn't count nails
