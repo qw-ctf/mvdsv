@@ -19,12 +19,16 @@
 
 #include "qwsvdef.h"
 
+#include <sys/mman.h>
+#include <unistd.h>
+
 typedef struct
 {
 	vfsfile_t funcs; // <= must be at top/begining of struct
 
 	FILE *handle;
 
+	byte *mapped;
 } vfsosfile_t;
 
 //==================================
@@ -87,6 +91,26 @@ static void VFSOS_Close(vfsfile_t *file)
 	Q_free(file);
 }
 
+static byte *VFSOS_Mmap (vfsfile_t *file, flocation_t *loc)
+{
+	vfsosfile_t *intfile = (vfsosfile_t*)file;
+	int pagesize = getpagesize();
+	int offset = pagesize * (loc->offset / pagesize); // offset must be page aligned
+	int fd = fileno(intfile->handle);
+	if (intfile->mapped)
+		Sys_Error("VFSOS_Mmap: Tried to mmap same file multiple times");
+	intfile->mapped = mmap(0, loc->len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, offset);
+	return intfile->mapped + loc->offset - offset; // restore actual offset
+}
+
+static int VFSOS_Munmap (vfsfile_t *file, flocation_t *loc)
+{
+	vfsosfile_t *intfile = (vfsosfile_t*)file;
+	int ret = munmap(intfile->mapped, loc->len);
+	intfile->mapped = NULL;
+	return ret;
+}
+
 vfsfile_t *FS_OpenTemp(void)
 {
 	FILE *f;
@@ -104,6 +128,8 @@ vfsfile_t *FS_OpenTemp(void)
 	file->funcs.Tell		= VFSOS_Tell;
 	file->funcs.GetLen		= VFSOS_GetSize;
 	file->funcs.Close		= VFSOS_Close;
+	file->funcs.Mmap		= VFSOS_Mmap;
+	file->funcs.Munmap		= VFSOS_Munmap;
 
 	file->handle = f;
 
@@ -146,6 +172,8 @@ vfsfile_t *VFSOS_Open(char *osname, char *mode)
 	file->funcs.Tell       = VFSOS_Tell;
 	file->funcs.GetLen     = VFSOS_GetSize;
 	file->funcs.Close      = VFSOS_Close;
+	file->funcs.Mmap       = VFSOS_Mmap;
+	file->funcs.Munmap     = VFSOS_Munmap;
 
 	file->handle = f;
 

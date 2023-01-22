@@ -20,6 +20,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef __FS_H__
 #define __FS_H__
 
+#include "vfs.h"
+
 /*
 =============================================================================
 
@@ -46,6 +48,7 @@ void FS_FileBase (char *in, char *out);
 
 void FS_WriteFile (char *filename, void *data, int len);
 
+vfsfile_t *FS_OpenFile (char *path, flocation_t *loc);
 byte *FS_LoadTempFile (char *path, int *len);
 byte *FS_LoadHunkFile (char *path, int *len);
 void FS_CreatePath (char *path);

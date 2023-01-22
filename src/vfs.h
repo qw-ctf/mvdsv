@@ -64,6 +64,8 @@ typedef struct vfsfile_s
 	unsigned long (*GetLen) (struct vfsfile_s *file);	// Could give some lag
 	void (*Close) (struct vfsfile_s *file);
 	void (*Flush) (struct vfsfile_s *file);
+	byte *(*Mmap) (struct vfsfile_s *file, flocation_t *loc);
+	int (*Munmap) (struct vfsfile_s *file, flocation_t *loc);
 	qbool seekingisabadplan;
 	qbool copyprotected;							// File found was in a pak
 } vfsfile_t;
@@ -109,6 +111,8 @@ int				VFS_SEEK   (struct vfsfile_s *vf, unsigned long pos, int whence);
 int				VFS_READ   (struct vfsfile_s *vf, void *buffer, int bytestoread, vfserrno_t *err);
 int				VFS_WRITE  (struct vfsfile_s *vf, const void *buffer, int bytestowrite);
 void			VFS_FLUSH  (struct vfsfile_s *vf);
+byte			*VFS_MMAP   (struct vfsfile_s *vf, flocation_t *loc);
+int				VFS_MUNMAP (struct vfsfile_s *vf, flocation_t *loc);
 // return null terminated string
 char		   *VFS_GETS   (struct vfsfile_s *vf, char *buffer, int buflen); 
 qbool			VFS_COPYPROTECTED(struct vfsfile_s *vf);

@@ -136,6 +136,18 @@ static unsigned long VFSPAK_GetLen (struct vfsfile_s *vfs)
 	return vfsp->length;
 }
 
+static byte *VFSPAK_Mmap (struct vfsfile_s *vfs, flocation_t *loc)
+{
+	vfspack_t *vfsp = (vfspack_t*)vfs;
+	return VFS_MMAP(vfsp->parentpak->handle, loc);
+}
+
+static int VFSPAK_Munmap (struct vfsfile_s *vfs, flocation_t *loc)
+{
+	vfspack_t *vfsp = (vfspack_t*)vfs;
+	return VFS_MUNMAP(vfsp->parentpak->handle, loc);
+}
+
 static void FSPAK_ClosePath(void *handle);
 static void VFSPAK_Close(vfsfile_t *vfs)
 {
@@ -168,6 +180,8 @@ static vfsfile_t *FSPAK_OpenVFS(void *handle, flocation_t *loc, char *mode)
 	vfsp->funcs.Tell		  = VFSPAK_Tell;
 	vfsp->funcs.GetLen	      = VFSPAK_GetLen;
 	vfsp->funcs.Close	      = VFSPAK_Close;
+	vfsp->funcs.Mmap		  = VFSPAK_Mmap;
+	vfsp->funcs.Munmap		  = VFSPAK_Munmap;
 	vfsp->funcs.Flush         = NULL;
 	if (loc->search)
 		vfsp->funcs.copyprotected = loc->search->copyprotected;

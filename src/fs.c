@@ -792,6 +792,20 @@ qbool VFS_COPYPROTECTED(struct vfsfile_s *vf)
 	return vf->copyprotected;
 }
 
+byte *VFS_MMAP (struct vfsfile_s *vf, flocation_t *loc)
+{
+	assert(vf);
+	VFS_CHECKCALL(vf, vf->Mmap, "VFS_MMAP");
+	return vf->Mmap(vf, loc);
+}
+
+int VFS_MUNMAP (struct vfsfile_s *vf, flocation_t *loc)
+{
+	assert(vf);
+	VFS_CHECKCALL(vf, vf->Munmap, "VFS_MUNMAP");
+	return vf->Munmap(vf, loc);
+}
+
 /*
 =============================================================================
 
@@ -980,6 +994,23 @@ byte *FS_LoadHunkFile (char *path, int *len)
 byte *FS_LoadTempFile (char *path, int *len)
 {
 	return FS_LoadFile (path, Hunk_TempAlloc, len);
+}
+
+vfsfile_t *FS_OpenFile (char *path, flocation_t *loc)
+{
+	vfsfile_t *f = NULL;
+	vfserrno_t err;
+	byte *buf;
+	int len;
+
+	// Look for it in the filesystem or pack files.
+	FS_FLocateFile(path, FSLFRT_LENGTH, loc);
+	if (loc->search)
+	{
+		f = loc->search->funcs->OpenVFS(loc->search->handle, loc, "rb");
+	}
+
+	return f;
 }
 
 /*

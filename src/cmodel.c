@@ -1289,7 +1289,8 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 	BuildPVSFunction cm_load_pvs_func = CM_BuildPVS;
 	qbool pad_lumps = false;
 	int required_length = 0;
-	int filelen = 0;
+	vfsfile_t *f;
+	flocation_t loc;
 
 	if (map_name[0]) {
 		assert(!strcmp(name, map_name));
@@ -1301,9 +1302,13 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 	}
 
 	// load the file
-	buf = (unsigned int *) FS_LoadTempFile (name, &filelen);
-	if (!buf)
+	f = FS_OpenFile(name, &loc);
+	if (!f)
 		Host_Error ("CM_LoadMap: %s not found", name);
+
+	buf = (void *) VFS_MMAP(f, &loc);
+	if (buf == (void *) -1)
+		Host_Error ("CM_LoadMap: %s could not be mapped", name);
 
 	COM_FileBase (name, loadname);
 
@@ -1332,7 +1337,7 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 		if (header->lumps[i].fileofs < 0 || header->lumps[i].filelen < 0) {
 			Host_Error("CM_LoadMap: %s has invalid lump definitions", name);
 		}
-		if (header->lumps[i].fileofs + header->lumps[i].filelen > filelen || header->lumps[i].fileofs + header->lumps[i].filelen < 0) {
+		if (header->lumps[i].fileofs + header->lumps[i].filelen > loc.len || header->lumps[i].fileofs + header->lumps[i].filelen < 0) {
 			Host_Error("CM_LoadMap: %s has invalid lump definitions", name);
 		}
 
@@ -1407,7 +1412,7 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 	CM_LoadEntities (&header->lumps[LUMP_ENTITIES]);
 	CM_LoadSubmodels (&header->lumps[LUMP_MODELS]);
 
-	CM_LoadPhysicsNormals(filelen);
+	CM_LoadPhysicsNormals(loc.len);
 	CM_MakeHull0 ();
 
 	cm_load_pvs_func (&header->lumps[LUMP_VISIBILITY], &header->lumps[LUMP_LEAFS]);
@@ -1416,6 +1421,11 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 		CM_BuildPHS ();
 
 	strlcpy (map_name, name, sizeof(map_name));
+
+	if (VFS_MUNMAP(f, &loc) < 0)
+		Host_Error ("CM_LoadMap: %s could not be unmapped", name);
+
+	VFS_CLOSE(f);
 
 	Q_free(padded_buf);
 
