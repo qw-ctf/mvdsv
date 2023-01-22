@@ -946,12 +946,10 @@ static byte *FS_LoadFile (char *path, void *allocator, int *file_length)
 	{
 		buf = (byte *) Hunk_TempAlloc (len + 1);
 	}
-#if 0
 	else if (allocator == Q_malloc)
 	{
 		buf = Q_malloc (len + 1);
 	}
-#endif
 	else
 	{
 		Sys_Error ("FS_LoadFile: bad usehunk\n");
@@ -980,6 +978,11 @@ byte *FS_LoadHunkFile (char *path, int *len)
 byte *FS_LoadTempFile (char *path, int *len)
 {
 	return FS_LoadFile (path, Hunk_TempAlloc, len);
+}
+
+byte *FS_LoadTempFileDynamic (char *path, int *len)
+{
+	return FS_LoadFile (path, Q_malloc, len);
 }
 
 /*

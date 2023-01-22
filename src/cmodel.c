@@ -1301,7 +1301,7 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 	}
 
 	// load the file
-	buf = (unsigned int *) FS_LoadTempFile (name, &filelen);
+	buf = (unsigned int *) FS_LoadTempFileDynamic (name, &filelen);
 	if (!buf)
 		Host_Error ("CM_LoadMap: %s not found", name);
 
@@ -1418,6 +1418,7 @@ cmodel_t *CM_LoadMap (char *name, qbool clientload, unsigned *checksum, unsigned
 	strlcpy (map_name, name, sizeof(map_name));
 
 	Q_free(padded_buf);
+	Q_free(buf);
 
 	return &map_cmodels[0];
 }

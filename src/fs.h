@@ -47,6 +47,7 @@ void FS_FileBase (char *in, char *out);
 void FS_WriteFile (char *filename, void *data, int len);
 
 byte *FS_LoadTempFile (char *path, int *len);
+byte *FS_LoadTempFileDynamic (char *path, int *len);
 byte *FS_LoadHunkFile (char *path, int *len);
 void FS_CreatePath (char *path);
 char *FS_NextPath (char *prevpath);
