@@ -208,7 +208,12 @@ void SV_WriteDelta(client_t* client, entity_state_t *from, entity_state_t *to, s
 			evenmorebits |= U_FTE_ENTITYDBL;
 			required_extensions |= FTE_PEXT_ENTITYDBL;
 		}
-	}
+    }
+
+#ifdef U_FTE_TRANS
+	if (to->trans != from->trans && (fte_extensions & FTE_PEXT_TRANS))
+		evenmorebits |= U_FTE_TRANS;
+#endif
 
 	if (evenmorebits&0xff00)
 		evenmorebits |= U_FTE_YETMORE;
@@ -289,6 +294,11 @@ void SV_WriteDelta(client_t* client, entity_state_t *from, entity_state_t *to, s
 	if (bits & U_ANGLE3) {
 		MSG_WriteAngle(msg, to->angles[2]);
 	}
+
+#ifdef U_FTE_TRANS
+	if (evenmorebits & U_FTE_TRANS)
+		MSG_WriteByte (msg, (byte)(to->trans));
+#endif
 }
 
 /*
@@ -662,7 +672,23 @@ static void SV_WritePlayersToClient (client_t *client, client_frame_t *frame, by
 
 		MSG_WriteByte (msg, svc_playerinfo);
 		MSG_WriteByte (msg, j);
-		MSG_WriteShort (msg, pflags);
+
+		if (client->fteprotocolextensions & FTE_PEXT_TRANS && client->mvdprotocolextensions1 & MVD_PEXT1_EXTRA_PFS)
+		{
+			if (pflags & 0xff0000)
+			{
+				pflags |= PF_EXTRA_PFS;
+			}
+			MSG_WriteShort (msg, pflags & 0xffff);
+			if (pflags & PF_EXTRA_PFS)
+			{
+				MSG_WriteByte(msg, (pflags & 0xff0000) >> 16);
+			}
+		}
+		else
+		{
+			MSG_WriteShort (msg, (pflags&0x3fff) | ((pflags&0xc00000)>>8));
+		}
 
 		if (client->mvdprotocolextensions1 & MVD_PEXT1_FLOATCOORDS) {
 			MSG_WriteLongCoord(msg, ent->v->origin[0]);
@@ -730,6 +756,9 @@ static void SV_WritePlayersToClient (client_t *client, client_frame_t *frame, by
 
 		if (pflags & PF_WEAPONFRAME)
 			MSG_WriteByte (msg, ent->v->weaponframe);
+
+        if (pflags & PF_TRANS_Z)
+            MSG_WriteByte (msg, ent->xv.alpha ? bound(1, ent->xv.alpha * 254 + 1, 255) : 0);
 	}
 }
 
@@ -955,6 +984,9 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 			state->colormap = ent->v->colormap;
 			state->skinnum = ent->v->skin;
 			state->effects = TranslateEffects(ent);
+#ifdef FTE_PEXT_TRANS
+            state->trans = ent->xv.alpha ? bound(1, ent->xv.alpha * 254 + 1, 255) : 0;
+#endif
 		}
 	} // server flash
 
