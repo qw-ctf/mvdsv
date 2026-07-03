@@ -1232,6 +1232,8 @@ sizebuf_t *WriteDest2(int dest)
 		return &sv.multicast;
 
 	case MSG_CSQC:
+		if (!csqcmsgbuffer)
+			PR2_RunError("PF2_Write_*: MSG_CSQC outside of SendEntity");
 		return csqcmsgbuffer;
 
 	default:
@@ -2018,10 +2020,15 @@ intptr_t EXT_SetSendNeeded(intptr_t *args)
 	unsigned int fl = args[2];
 	unsigned int to = args[3];
 
+	if (!subject || subject >= MAX_EDICTS || !fl)
+		return 0;
+
 	if (!to)
 	{	//broadcast
 		for (to = 0; to < MAX_CLIENTS; to++)
 		{
+			if (svs.clients[to].state < cs_connected)
+				continue;
 			svs.clients[to].csqcentitysendflags[subject] |= fl;
 		}
 	}
@@ -2032,7 +2039,7 @@ intptr_t EXT_SetSendNeeded(intptr_t *args)
 		{
 			;	//some kind of error.
 		}
-		else
+		else if (svs.clients[to].state >= cs_connected)
 		{
 			svs.clients[to].csqcentitysendflags[subject] |= fl;
 		}

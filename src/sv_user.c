@@ -3125,7 +3125,7 @@ void SV_EnableClientsCSQC(void)
 	//if the csqc has just restarted, its probably going to want us to resend all csqc ents from scratch because of all the setup it might do.
 	for (e = 1; e < MAX_EDICTS; e++)
 	{
-		if (sv_client->csqcentityscope[e] & SCOPE_WANTSEND)
+		if (sv_client->csqcentityscope[e] & (SCOPE_WANTSEND | SCOPE_ASSUMED_EXISTING))
 		{
 			sv_client->csqcentitysendflags[e] = 0xFFFFFF;
 		}
@@ -3576,30 +3576,15 @@ void SV_PreRunCmd(void)
 CSQC Stuff, for now just SimpleProjectiles
 ===========
 */
-qbool SV_FrameLost(int framenum)
+qbool SV_FrameLost(int framenum, int latest_received_framenum)
 {
 	if (framenum <= sv_client->csqc_framenum)
 	{
-		EntityFrameCSQC_LostFrame(sv_client, framenum);
+		EntityFrameCSQC_LostFrame(sv_client, framenum, latest_received_framenum);
 		return true;
 	}
 
 	return false;
-}
-
-static void SV_FrameAck(int framenum)
-{
-	/*
-	int i;
-	// scan for packets made obsolete by this ack and delete them
-	for (i = 0; i < ENTITYFRAME5_MAXPACKETLOGS; i++)
-	{
-		if (d->packetlog[i].packetnumber <= framenum)
-		{
-			d->packetlog[i].packetnumber = 0;
-		}
-	}
-	*/
 }
 #endif
 
@@ -4649,14 +4634,17 @@ void SV_ExecuteClientMessage (client_t *cl)
 	seq_hash = cl->netchan.incoming_sequence;
 
 #ifdef FTE_PEXT_CSQC
+	// CSQC frames are keyed to outgoing_sequence; incoming_acknowledged is the
+	// latest of our packets the client has seen, so everything below it that
+	// was never itself acked is treated as lost (FTE's SV_AckEntityFrame does
+	// the same).
 	for (i = cl->csqc_latestverified + 1; i < cl->netchan.incoming_acknowledged; i++)
 	{
-		if (!SV_FrameLost(i))
+		if (!SV_FrameLost(i, cl->netchan.incoming_acknowledged))
 		{
 			break;
 		}
 	}
-	SV_FrameAck(cl->netchan.incoming_acknowledged);
 	cl->csqc_latestverified = cl->netchan.incoming_acknowledged;
 #endif
 

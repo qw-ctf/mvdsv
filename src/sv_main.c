@@ -207,6 +207,8 @@ cvar_t sv_pext_ezquake_verfortrans = {"pext_ezquake_verfortrans", "7814", CVAR_N
 
 #ifdef FTE_PEXT_CSQC
 cvar_t sv_csqc_progname = { "sv_csqc_progname", "csprogs.dat" };
+// Inject packet size information for data directed to csqc (svc_fte_csqcentities_sized).
+cvar_t sv_csqcdebug = { "sv_csqcdebug", "0" };
 #endif
 
 qbool sv_error = false;
@@ -503,20 +505,6 @@ void SV_FullClientUpdate (client_t *client, sizebuf_t *buf)
 {
 	char info[MAX_EXT_INFO_STRING];
 	int i;
-
-#ifdef FTE_PEXT_CSQC
-	// Reki: resend all CSQC ents, for reasons. previously the initial CSQC ent states were being dropped for some delta reasons I think.
-	if (client->csqcactive)
-	{
-		for (i = 1; i < MAX_EDICTS; i++)
-		{
-			if (client->csqcentityscope[i] & SCOPE_WANTSEND)
-			{
-				client->csqcentitysendflags[i] = 0xFFFFFF;
-			}
-		}
-	}
-#endif
 
 	i = client - svs.clients;
 
@@ -3622,6 +3610,7 @@ void SV_InitLocal (void)
 
 #ifdef FTE_PEXT_CSQC
 	Cvar_Register (&sv_csqc_progname);
+	Cvar_Register (&sv_csqcdebug);
 #endif
 
 // QW262 -->

@@ -879,13 +879,43 @@ void EntityFrameCSQC_DeallocFrame(client_t *client, int framenum)
 }
 
 sizebuf_t *csqcmsgbuffer;
+
+/*
+ * Schedule a remove for an entity that is no longer transmitted to this
+ * client. FTE honours PVSF_NOREMOVE for entities that still exist; genuinely
+ * freed edicts have their extended fields cleared by ED_Free, so those are
+ * always removed.
+ */
+static void EntityFrameCSQC_ScheduleRemove(client_t *client, int number)
+{
+	client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
+	if (client->csqcentityscope[number] & SCOPE_ASSUMED_EXISTING)
+	{
+		if ((int)EDICT_NUM(number)->xv.pvsflags & PVSF_NOREMOVE)
+		{
+			return;
+		}
+		client->csqcentityscope[number] |= SCOPE_WANTREMOVE;
+	}
+	client->csqcentitysendflags[number] = 0xFFFFFF;
+}
+
 int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist_size, const unsigned short *entlist)
 {
+	extern cvar_t sv_csqcdebug;
+	byte entbuf[MAX_MSGLEN];
+	sizebuf_t entmsg;
 	int num, number, end, sendflags;
 	const unsigned short *entnum;
 	edict_t *ed;
+	// sv_csqcdebug injects a length prefix per update so the client can
+	// pinpoint mismatched CSQC_Ent_Update parsers (FTE's svc 92)
+	int svcnumber = (int)sv_csqcdebug.value ? svc_fte_csqcentities_sized : svc_fte_csqcentities;
 
-	client->csqc_framenum = client->netchan.incoming_sequence;
+	// The resend history is keyed to the outgoing sequence: this frame goes
+	// out in the packet numbered netchan.outgoing_sequence and the client's
+	// acks come back in that space through netchan.incoming_acknowledged.
+	client->csqc_framenum = client->netchan.outgoing_sequence;
 	int dbframe = EntityFrameCSQC_AllocFrame(client, client->csqc_framenum);
 	csqcentityframedb_t *db = &client->csqcentityframehistory[dbframe];
 	if (client->csqcentityframe_lastreset < 0)
@@ -893,12 +923,12 @@ int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist
 		client->csqcentityframe_lastreset = client->csqc_framenum;
 	}
 
-	csqcmsgbuffer = msg;
 	int sectionstarted = false;
 
 	maxsize -= 24;
 	if (msg->cursize + 32 >= maxsize)
 	{
+		EntityFrameCSQC_DeallocFrame(client, client->csqc_framenum);
 		return false;
 	}
 
@@ -911,16 +941,11 @@ int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist
 	number = 1;
 	for (num = 0, entnum = entlist; num < entlist_size; num++, entnum++)
 	{
-		// cleanup old ents
+		// schedule removes for entities that dropped out of the interest list
 		end = *entnum;
 		for (; number < end; number++)
 		{
-			client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
-			if (client->csqcentityscope[number] & SCOPE_ASSUMED_EXISTING)
-			{
-				client->csqcentityscope[number] |= SCOPE_WANTREMOVE;
-			}
-			client->csqcentitysendflags[number] = 0xFFFFFF;
+			EntityFrameCSQC_ScheduleRemove(client, number);
 		}
 
 		ed = EDICT_NUM(number);//sv.edicts + number;
@@ -931,23 +956,14 @@ int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist
 		}
 		else
 		{
-			if (client->csqcentityscope[number] & SCOPE_ASSUMED_EXISTING)
-			{
-				client->csqcentityscope[number] |= SCOPE_WANTREMOVE;
-			}
-			client->csqcentitysendflags[number] = 0xFFFFFF;
+			EntityFrameCSQC_ScheduleRemove(client, number);
 		}
 		number++;
 	}
 	end = client->csqcnumedicts;
 	for (; number < end; number++)
 	{
-		client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
-		if (client->csqcentityscope[number] & SCOPE_ASSUMED_EXISTING)
-		{
-			client->csqcentityscope[number] |= SCOPE_WANTREMOVE;
-		}
-		client->csqcentitysendflags[number] = 0xFFFFFF;
+		EntityFrameCSQC_ScheduleRemove(client, number);
 	}
 
 
@@ -968,37 +984,35 @@ int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist
 		if (client->csqcentityscope[number] & SCOPE_WANTREMOVE)  // Also implies ASSUMED_EXISTING.
 		{
 			// A removal. SendFlags have no power here.
-			// write a remove message
+			// entity number + list terminator must still fit
+			if (msg->cursize + 7 >= maxsize)
+			{
+				break;
+			}
 			// first write the message identifier if needed
 			if (!sectionstarted)
 			{
 				sectionstarted = 1;
-				MSG_WriteByte(msg, svc_fte_csqcentities);
+				MSG_WriteByte(msg, svcnumber);
 			}
 			// write the remove message
-			{
-				MSG_WriteShort(msg, (unsigned short)number | 0x8000);
-				client->csqcentityscope[number] &= ~(SCOPE_WANTSEND | SCOPE_ASSUMED_EXISTING);
-				client->csqcentitysendflags[number] = 0xFFFFFF; // resend completely if it becomes active again
-				db->entno[db->num] = number;
-				db->sendflags[db->num] = -1;
-				db->num += 1;
-			}
-			if (msg->cursize + 17 >= maxsize)
-			{
-				break;
-			}
+			MSG_WriteShort(msg, (unsigned short)number | 0x8000);
+			client->csqcentityscope[number] &= ~(SCOPE_WANTSEND | SCOPE_ASSUMED_EXISTING);
+			client->csqcentitysendflags[number] = 0xFFFFFF; // resend completely if it becomes active again
+			db->entno[db->num] = number;
+			db->sendflags[db->num] = -1;
+			db->num += 1;
 		}
 		else
 		{
-			// save the cursize value in case we overflow and have to rollback
-			int oldcursize = msg->cursize;
-			int oldsectionstarted = sectionstarted;
+			int qcret;
+			int bytes_needed;
 
 			// An update.
 			sendflags = client->csqcentitysendflags[number];
 
-			// If it's a new entity, always assume sendflags 0xFFFFFF.
+			// If it's a new entity, always assume sendflags 0xFFFFFF. This
+			// also re-asks the QC every frame for entities it has declined.
 			if (!(client->csqcentityscope[number] & SCOPE_ASSUMED_EXISTING))
 			{
 				sendflags = 0xFFFFFF;
@@ -1010,58 +1024,111 @@ int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist
 				continue;
 			}
 
+			// The QC serialises into a scratch buffer, like FTE. Writing
+			// straight to msg would let SZ_GetSpace discard the whole datagram
+			// on overflow, which a cursize rollback cannot undo.
+			SZ_InitEx(&entmsg, entbuf, sizeof(entbuf), true);
+			csqcmsgbuffer = &entmsg;
+			qcret = PR2_SendEntity(ed, client->edict, sendflags);
+			csqcmsgbuffer = NULL;
+
+			if (!qcret)
+			{
+				// The QC does not want this client to see the entity now.
+				client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
+				if (!(client->csqcentityscope[number] & SCOPE_ASSUMED_EXISTING))
+				{
+					// Never sent; the new-entity path above keeps re-asking.
+					client->csqcentitysendflags[number] = 0;
+					continue;
+				}
+				if ((int)ed->xv.pvsflags & PVSF_NOREMOVE)
+				{
+					client->csqcentitysendflags[number] = sendflags; // keep asking
+					continue;
+				}
+				// The client has it: tell it to remove the entity.
+				if (msg->cursize + 7 >= maxsize)
+				{
+					client->csqcentitysendflags[number] = sendflags; // retry next frame
+					break;
+				}
+				if (!sectionstarted)
+				{
+					sectionstarted = 1;
+					MSG_WriteByte(msg, svcnumber);
+				}
+				MSG_WriteShort(msg, (unsigned short)number | 0x8000);
+				client->csqcentityscope[number] &= ~SCOPE_ASSUMED_EXISTING;
+				client->csqcentitysendflags[number] = 0xFFFFFF;
+				db->entno[db->num] = number;
+				db->sendflags[db->num] = -1;
+				db->num += 1;
+				continue;
+			}
+
+			if (!entmsg.cursize)
+			{
+				Con_DPrintf("CSQC SendEntity wrote no data for entity %d\n", number);
+				client->csqcentitysendflags[number] = 0;
+				client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
+				continue;
+			}
+
+			// svc byte (maybe) + entity number (+ debug length) + payload + list terminator
+			bytes_needed = (sectionstarted ? 0 : 1) + 2 + entmsg.cursize + 2;
+			if (svcnumber == svc_fte_csqcentities_sized)
+			{
+				bytes_needed += 2;
+			}
+
+			// Judge "can never fit" against the full datagram capacity, not
+			// against maxsize: that shrinks with the reliable backlog and
+			// would drop legitimate updates during a reliable burst.
+			if (entmsg.overflowed || bytes_needed + 32 > msg->maxsize)
+			{
+				// Cannot fit even in an otherwise empty packet: drop the update.
+				Con_Printf("CSQC update for entity %d is too large (%d bytes), dropped\n", number, entmsg.cursize);
+				client->csqcentitysendflags[number] = 0;
+				client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
+				continue;
+			}
+
+			if (msg->cursize + bytes_needed > maxsize)
+			{
+				// Too big for what remains of this packet: leave it queued and
+				// retry next frame, so later entities cannot overtake it.
+				break;
+			}
+
 			if (!sectionstarted)
 			{
-				MSG_WriteByte(msg, svc_fte_csqcentities);
+				MSG_WriteByte(msg, svcnumber);
 				sectionstarted = 1;
 			}
 
 			MSG_WriteShort(msg, (unsigned short)number);
-			msg->allowoverflow = true;
-
-			if (!PR2_SendEntity(ed, client->edict, sendflags))
+			if (svcnumber == svc_fte_csqcentities_sized)
 			{
-				msg->cursize = oldcursize;
-				sectionstarted = oldsectionstarted;
-				msg->allowoverflow = false;
-				continue;
+				MSG_WriteShort(msg, entmsg.cursize);
 			}
+			SZ_Write(msg, entmsg.data, entmsg.cursize);
 
-			msg->allowoverflow = false;
-
-			if (msg->cursize + 4 <= maxsize)
-			{
-				// an update has been successfully written
-				client->csqcentitysendflags[number] = 0;
-				client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
-				client->csqcentityscope[number] |= SCOPE_EXISTED_ONCE | SCOPE_ASSUMED_EXISTING;
-				db->entno[db->num] = number;
-				db->sendflags[db->num] = sendflags;
-				db->num += 1;
-
-				if (msg->cursize + 17 >= maxsize)
-				{
-					break;
-				}
-				continue;
-			}
-
-			// update was too big for this packet - rollback the buffer to its
-			// state before the writes occurred, we'll try again next frame
-			msg->cursize = oldcursize;
-			msg->overflowed = false;
+			// an update has been successfully written
+			client->csqcentitysendflags[number] = 0;
+			client->csqcentityscope[number] &= ~SCOPE_WANTSEND;
+			client->csqcentityscope[number] |= SCOPE_EXISTED_ONCE | SCOPE_ASSUMED_EXISTING;
+			db->entno[db->num] = number;
+			db->sendflags[db->num] = sendflags;
+			db->num += 1;
 		}
 	}
 
 	if (sectionstarted)
 	{
-		// write index 0 to end the update (0 is never used by real entities)
+		// write index 0 to end the update (0 is never used by real entities).
+		// FTE emits nothing at all when there is nothing to send.
 		MSG_WriteShort(msg, 0);
-	}
-	else
-	{
-		sectionstarted = 1;
-		MSG_WriteByte(msg, svc_fte_csqcentities);
 	}
 
 	if (db->num == 0)
@@ -1072,12 +1139,29 @@ int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist
 	return sectionstarted;
 }
 
-int SV_PrepareEntity_CSQC(edict_t *ent, entity_state_t *cs, int enumber)
+static void EntityFrameCSQC_LostAllFrames(client_t *client)
 {
-	return ent->xv.sendentity != 0;
+	// The loss fell out of the history ring: resend everything the client
+	// may still be holding on to.
+	int i;
+
+	for (i = 1; i < client->csqcnumedicts; i++)
+	{
+		if (client->csqcentityscope[i] & SCOPE_EXISTED_ONCE)
+		{
+			if (EDICT_NUM(i)->xv.sendentity)
+			{
+				client->csqcentitysendflags[i] |= 0xFFFFFF;
+			}
+			else
+			{
+				client->csqcentityscope[i] |= SCOPE_ASSUMED_EXISTING; // force a remove
+			}
+		}
+	}
 }
 
-void EntityFrameCSQC_LostFrame(client_t *client, int framenum)
+void EntityFrameCSQC_LostFrame(client_t *client, int framenum, int latest_received_framenum)
 {
 	// marks a frame as lost
 	int i, j;
@@ -1125,11 +1209,11 @@ void EntityFrameCSQC_LostFrame(client_t *client, int framenum)
 			return;
 		}
 
-		// a too old frame got lost... sorry, cannot handle this
+		// a too old frame got lost... resend everything from scratch
 		Con_DPrintf("CSQC entity DB: lost a frame too early to do any handling (resending ALL)...\n");
 		Con_DPrintf("Lost frame = %d\n", framenum);
 		Con_DPrintf("Entity DB = %d to %d\n", client->csqcentityframehistory[ringfirst].framenum, client->csqcentityframehistory[ringlast].framenum);
-		//EntityFrameCSQC_LostAllFrames(client);
+		EntityFrameCSQC_LostAllFrames(client);
 		client->csqcentityframe_lastreset = -1;
 		return;
 	}
@@ -1150,6 +1234,11 @@ void EntityFrameCSQC_LostFrame(client_t *client, int framenum)
 		if (d->framenum < 0)
 		{
 			// deleted frame
+		}
+		else if (d->framenum > latest_received_framenum)
+		{
+			// Only frames the client actually acknowledged may suppress
+			// resend bits; later unacked frames may turn out lost as well.
 		}
 		else if (d->framenum < framenum)
 		{
@@ -1199,10 +1288,32 @@ void EntityFrameCSQC_LostFrame(client_t *client, int framenum)
 		{
 			client->csqcentityscope[i] |= SCOPE_ASSUMED_EXISTING;  // FORCE REMOVE.
 		}
-		else
+		else if (recoversendflags[i] > 0)
 		{
 			client->csqcentitysendflags[i] |= recoversendflags[i];
 		}
+	}
+}
+
+void SV_ResetClientCSQCEntityState(client_t *client)
+{
+	int i;
+
+	// Per-client CSQC tracking is meaningless across a level change; FTE
+	// resets it and waits for the client to re-send 'enablecsqc' once its
+	// csprogs have reinitialised.
+	client->csqcactive = false;
+	client->csqc_framenum = 0;
+	client->csqc_latestverified = client->netchan.incoming_acknowledged;
+	client->csqcnumedicts = 0;
+	client->csqcentityframehistory_next = 0;
+	client->csqcentityframe_lastreset = -1;
+	memset(client->csqcentityscope, 0, sizeof(client->csqcentityscope));
+	memset(client->csqcentitysendflags, 0, sizeof(client->csqcentitysendflags));
+	for (i = 0; i < NUM_CSQCENTITYDB_FRAMES; i++)
+	{
+		client->csqcentityframehistory[i].framenum = -1;
+		client->csqcentityframehistory[i].num = 0;
 	}
 }
 #endif
@@ -1324,6 +1435,18 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 
 		for (e = pr_nqprogs ? 1 : MAX_CLIENTS + 1, ent = EDICT_NUM(e); e < sv.num_edicts; e++, ent = NEXT_EDICT(ent))
 		{
+#ifdef FTE_PEXT_CSQC
+			// FTE never PVS-culls SendEntity entities: if SendEntity is set,
+			// the entity is important even when not visible, and the QC
+			// decides per viewer from within the SendEntity callback. The MVD
+			// recorder participates when sv_demo_csqc enabled it.
+			if (ent->xv.sendentity && client->csqcactive)
+			{
+				sv.csqcsendstates[numcsqcsendstates++] = e;
+				continue;
+			}
+#endif
+
 			if (!SV_EntityVisibleToClient(client, e, pvs)) {
 				if (fofs_visibility) {
 					((eval_t *)((byte *)(ent)->v + fofs_visibility))->_int &= ~client_flag;
@@ -1339,19 +1462,6 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 			if (e == hideent) {
 				continue;
 			}
-
-#ifdef FTE_PEXT_CSQC
-			if (clent && client->netchan.incoming_sequence > 5) {
-				if (client->csqcactive && !recorder)
-				{
-					if (SV_PrepareEntity_CSQC(ent, state, e))
-					{
-						sv.csqcsendstates[numcsqcsendstates++] = e;
-						continue;
-					}
-				}
-			}
-#endif
 
 			if (SV_AddNailUpdate (ent))
 				continue; // added to the special update list
@@ -1433,8 +1543,13 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 	SV_EmitNailUpdate (msg, recorder);
 
 #ifdef FTE_PEXT_CSQC
-	if (client->csqcactive && !recorder)
+	if (client->csqcactive)
 	{
+		// Reserve room for the pending reliable backlog: Netchan_Transmit
+		// silently drops the whole unreliable datagram when the reliable part
+		// leaves no space for it, yet the packet still gets acked, so the
+		// loss would be invisible to the CSQC resend tracking. The recorder
+		// has no netchan backlog, its message.cursize is always 0.
 		SV_EmitCSQCUpdate(client, msg, msg->maxsize - (client->netchan.message.cursize + 30), numcsqcsendstates, sv.csqcsendstates);
 	}
 #endif

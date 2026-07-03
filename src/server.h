@@ -196,6 +196,9 @@ typedef struct
 #define SCOPE_EXISTED_ONCE 4      // Set if the entity once existed. All these get resent on a full loss.
 #define SCOPE_ASSUMED_EXISTING 8  // Set if the entity is currently assumed existing and therefore needs removes.
 
+// subset of FTE's .pvsflags that the CSQC path honours
+#define PVSF_NOREMOVE 0x80        // Do not remove the entity from the client when it stops being sent.
+
 #define NUM_CSQCENTITIES_PER_FRAME 256
 typedef struct csqcentityframedb_s
 {
@@ -961,7 +964,8 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 void SV_SetVisibleEntitiesForBot (client_t* client);
 #ifdef FTE_PEXT_CSQC
 int SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, int maxsize, int entlist_size, const unsigned short *entlist);
-void EntityFrameCSQC_LostFrame(client_t *client, int framenum);
+void EntityFrameCSQC_LostFrame(client_t *client, int framenum, int latest_received_framenum);
+void SV_ResetClientCSQCEntityState(client_t *client);
 #endif
 
 //

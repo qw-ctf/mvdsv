@@ -221,7 +221,11 @@ static void SV_LoadCSQC(void)
 		Info_SetValueForStarKey(svs.info, "*csprogs", text, MAX_SERVERINFO_STRING);
 		sprintf(text, "0x%x", (unsigned int)size);
 		Info_SetValueForStarKey(svs.info, "*csprogssize", text, MAX_SERVERINFO_STRING);
-		Info_SetValueForStarKey(svs.info, "*csprogsname", sv_csqc_progname.string, MAX_SERVERINFO_STRING);
+		// like FTE, only name the file when it differs from the default
+		if (strcmp(sv_csqc_progname.string, "csprogs.dat"))
+			Info_SetValueForStarKey(svs.info, "*csprogsname", sv_csqc_progname.string, MAX_SERVERINFO_STRING);
+		else
+			Info_SetValueForStarKey(svs.info, "*csprogsname", "", MAX_SERVERINFO_STRING);
 	}
 	else
 	{
@@ -378,6 +382,14 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 
 #ifdef FTE_PEXT_CSQC
 	SV_LoadCSQC();
+
+	// Per-client CSQC state is meaningless on the new level. Like FTE, drop
+	// it and wait for each client to re-send 'enablecsqc' once its csprogs
+	// have reinitialised for the new map.
+	for (i = 0; i < MAX_CLIENTS; i++)
+	{
+		SV_ResetClientCSQCEntityState(&svs.clients[i]);
+	}
 #endif
 
 	// load progs to get entity field count

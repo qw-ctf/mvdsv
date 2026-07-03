@@ -42,6 +42,13 @@ cvar_t  sv_demoIdlefps      = {"sv_demoIdlefps",    "10"};
 cvar_t  sv_demoPings        = {"sv_demopings",      "3"};
 cvar_t  sv_demoMaxSize      = {"sv_demoMaxSize",    "20480"};
 cvar_t  sv_demoExtraNames   = {"sv_demoExtraNames", "0"};
+#ifdef FTE_PEXT_CSQC
+// Record CSQC entities into MVDs (svc_fte_csqcentities in dem_all, viewer =
+// world, like FTE). Off by default: older demo/QTV consumers do not parse
+// svc_fte_csqcentities, which is also why FTE's ezquake-compatible extension
+// subset leaves PEXT_CSQC out of demos.
+cvar_t  sv_demo_csqc        = {"sv_demo_csqc",      "0"};
+#endif
 
 cvar_t	sv_demoPrefix		= {"sv_demoPrefix",		""};
 cvar_t	sv_demoSuffix		= {"sv_demoSuffix",		""};
@@ -1243,6 +1250,18 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 #ifdef FTE_PEXT2_VOICECHAT
 	demo.recorder.fteprotocolextensions2 |= FTE_PEXT2_VOICECHAT;
 #endif
+#ifdef FTE_PEXT_CSQC
+	SV_ResetClientCSQCEntityState(&demo.recorder);
+	if ((int)sv_demo_csqc.value && sv.csqcchecksum)
+	{
+		demo.recorder.fteprotocolextensions |= FTE_PEXT_CSQC;
+		demo.recorder.csqcactive = true;
+	}
+	else
+	{
+		demo.recorder.fteprotocolextensions &= ~FTE_PEXT_CSQC;
+	}
+#endif
 
 #ifdef FTE_PEXT_FLOATCOORDS
 	//fix up extensions to match sv_bigcoords correctly. sorry for old clients not working.
@@ -1841,6 +1860,9 @@ static void MVD_Init (void)
 	Cvar_Register (&sv_demofps);
 	Cvar_Register (&sv_demoIdlefps);
 	Cvar_Register (&sv_demoPings);
+#ifdef FTE_PEXT_CSQC
+	Cvar_Register (&sv_demo_csqc);
+#endif
 	Cvar_Register (&sv_demoUseCache);
 	Cvar_Register (&sv_demoCacheSize);
 	Cvar_Register (&sv_demoMaxSize);
