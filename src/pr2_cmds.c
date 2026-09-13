@@ -1269,7 +1269,10 @@ inspected, so a payload byte equal to 0x53 is never mistaken for the svc.
 Writing svc 83 to a broadcast destination is a mod contract violation: it would
 bypass the CSQC client filter. MSG_ONE/MSG_INIT are accumulating streams whose
 message boundary cannot be recovered, so they cannot be checked here (the mod
-contract forbids CSQC packets there; see g_csqc.h in the mod).
+contract forbids CSQC packets there; see g_csqc.h in the mod). The broadcast
+check only sees a cgamepacket written while the destination is still empty; a
+mod that writes any other message first is not caught, so this is a
+non-fatal warning rather than an error.
 ====================
 */
 static void PF2_WriteCheckCSQC (int to, int data)
@@ -1284,7 +1287,8 @@ static void PF2_WriteCheckCSQC (int to, int data)
 		sizebuf_t *d = WriteDest2(to);
 
 		if (d && d->cursize == 0)
-			PR2_RunError("CSQC packets must be sent with multicast()");
+			Con_Printf("WARNING: CSQC packet written to a broadcast destination, "
+				"send it with multicast()\n");
 	}
 }
 #endif

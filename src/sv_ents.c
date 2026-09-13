@@ -702,6 +702,7 @@ acknowledged one and this one were lost. Mirrors FTE sv_ents.c:618.
 void SV_AckEntityFrame (client_t *client, int framenum)
 {
 	int frame;
+	int acked = framenum;
 
 	if (!client->csqcactive)
 		return;
@@ -714,6 +715,16 @@ void SV_AckEntityFrame (client_t *client, int framenum)
 
 	for (; frame < framenum; frame++)
 		SV_CSQC_DroppedPacket (client, frame);
+
+	// The acknowledged datagram itself was delivered: drop its log so a later
+	// slot reuse does not mistake it for a lost frame (it still carries
+	// csqc_lognum from when it was built). Frames strictly between the previous
+	// ack and this one were handled above.
+	if (client->frames[acked & UPDATE_MASK].sequence == acked)
+	{
+		client->frames[acked & UPDATE_MASK].csqc_lognum = 0;
+		client->frames[acked & UPDATE_MASK].csqc_log_overflow = false;
+	}
 }
 
 /*
@@ -803,10 +814,12 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 		logframe = &client->frames[seq & UPDATE_MASK];
 		if (logframe->sequence != seq)
 		{
-			// The slot is being reused for a newer datagram. If it still held
-			// updates from an older frame that was never acked, those are lost:
-			// re-flag them before overwriting (FTE SV_ReplaceEntityFrame).
-			if (logframe->sequence && logframe->csqc_lognum)
+			// The slot is being reused for a newer datagram. Only an older frame
+			// that was never acknowledged is lost (its log survives because
+			// SV_AckEntityFrame never visited it); re-flag it before overwriting
+			// (FTE SV_ReplaceEntityFrame). A frame that was acknowledged keeps
+			// its log until this point and must not be re-flagged.
+			if (logframe->sequence > client->csqc_lastack && logframe->csqc_lognum)
 				SV_CSQC_DroppedPacket (client, logframe->sequence);
 			logframe->sequence = seq;
 			logframe->csqc_lognum = 0;
