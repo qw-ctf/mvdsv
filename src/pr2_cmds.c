@@ -1287,7 +1287,7 @@ static void PF2_WriteCheckCSQC (int to, int data)
 		sizebuf_t *d = WriteDest2(to);
 
 		if (d && d->cursize == 0)
-			Con_Printf("WARNING: CSQC packet written to a broadcast destination, "
+			Con_DPrintf("WARNING: CSQC packet written to a broadcast destination, "
 				"send it with multicast()\n");
 	}
 }

@@ -819,8 +819,19 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 			// SV_AckEntityFrame never visited it); re-flag it before overwriting
 			// (FTE SV_ReplaceEntityFrame). A frame that was acknowledged keeps
 			// its log until this point and must not be re-flagged.
-			if (logframe->sequence > client->csqc_lastack && logframe->csqc_lognum)
-				SV_CSQC_DroppedPacket (client, logframe->sequence);
+			//
+			// Advancing the ack mark past the reused frame is the other half of
+			// SV_ReplaceEntityFrame: the ring cannot track anything older than
+			// the slot being overwritten, so SV_AckEntityFrame must not try to.
+			// Without it, a one-way server->client outage longer than the frame
+			// ring lets the ack handler's clamp skip the oldest un-acked frames,
+			// which then fall below csqc_lastack and are never re-flagged.
+			if (logframe->sequence > client->csqc_lastack)
+			{
+				if (logframe->csqc_lognum)
+					SV_CSQC_DroppedPacket (client, logframe->sequence);
+				client->csqc_lastack = logframe->sequence;
+			}
 			logframe->sequence = seq;
 			logframe->csqc_lognum = 0;
 			logframe->csqc_log_overflow = false;
