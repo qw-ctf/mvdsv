@@ -36,6 +36,7 @@
  * Changes in GAME_API_VERSION 17:
  * - GAME_EDICT_CSQCSEND (200) and GAME_QCREQUEST exports for CSQC
  * - clientstat/pointerstat/setsendneeded extensions via G_Map_Extension
+ * - G_PRECACHE_SOUND/G_PRECACHE_MODEL return the precache index
  *
  * Changes in GAME_API_VERSION 16:
  * - server edict data removed from game edict: typedef struct shared_edict_s { entvars_t v;} edict_t;
