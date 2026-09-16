@@ -1122,7 +1122,25 @@ void SV_UpdateQCStats(edict_t *ent, int *statsi, float *statsf, const char **sta
 // which is also what keeps stock ezQuake/QTV demos compatible.
 qbool SV_WantsQCStats (client_t *client)
 {
-	return (client->fteprotocolextensions & FTE_PEXT_CSQC) != 0;
+	if (!(client->fteprotocolextensions & FTE_PEXT_CSQC))
+		return false;
+
+#ifdef PROTOCOL_VERSION_MVD1
+	// Except a native EZCSQC client. It negotiates FTE_PEXT_CSQC to receive the
+	// payload transport, but underneath it is an ezQuake: MAX_CL_STATS is 32
+	// there and CL_SetStat calls Host_Error above that, so the first stat a mod
+	// registers would drop every such client from the server.
+	//
+	// The bit identifies it exactly, in both directions. That client sets
+	// FTE_PEXT_CSQC only alongside this one and clears it otherwise, while a
+	// client running real csqc never sets it, FTE having no knowledge of the
+	// extension at all. The recorder does not set it either, so it keeps
+	// receiving whatever it did before.
+	if (client->mvdprotocolextensions1 & MVD_PEXT1_EZCSQC)
+		return false;
+#endif
+
+	return true;
 }
 #endif
 
