@@ -5305,6 +5305,35 @@ static qbool SV_ClientExtensionWeaponSwitch(client_t* cl)
 
 /*
 ==============
+SV_ClientAntilagRewindMsec
+
+Milliseconds sv_antilag rewinds the world for this client's acknowledged frame.
+Mirrors the target_time selection in SV_ExecuteClientMessage above and must stay
+in sync with it; a mod doing its own traces needs the same number the engine
+uses. Falls back to the averaged ping until the acknowledged frame has timing.
+==============
+*/
+double SV_ClientAntilagRewindMsec (client_t *cl)
+{
+	client_frame_t *frame = &cl->frames[cl->netchan.incoming_acknowledged & UPDATE_MASK];
+	double target_time, max_physfps = sv_maxfps.value;
+
+	if (frame->ping_time <= 0)
+		return SV_CalcPing(cl);
+
+	if (max_physfps < 20 || max_physfps > 1000)
+		max_physfps = 77.0;
+
+	if (sv_antilag_no_pred.value)
+		target_time = frame->sv_time;
+	else
+		target_time = min(frame->sv_time + (frame->ping_time < MAX_PREDICTION ? 1/max_physfps : MAX_PREDICTION), sv.time);
+
+	return max(sv.time - target_time, 0) * 1000;
+}
+
+/*
+==============
 SV_UserInit
 ==============
 */

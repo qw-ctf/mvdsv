@@ -1043,6 +1043,7 @@ void SV_UserInit (void);
 void SV_TogglePause (const char *msg, int bit);
 void ProcessUserInfoChange (client_t* sv_client, const char* key, const char* old_value);
 void SV_RotateCmd(client_t* cl, usercmd_t* cmd);
+double SV_ClientAntilagRewindMsec (client_t *cl);	// ms sv_antilag rewinds this client's traces
 #ifdef FTE_PEXT_CSQC
 qbool SV_ClientSupportsEZCSQC (const client_t *cl);	// csqcactive && EZCSQC negotiated
 #endif
