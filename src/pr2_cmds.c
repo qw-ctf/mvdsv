@@ -1180,7 +1180,14 @@ MESSAGE WRITING
 #define	MSG_ALL			2		// reliable to all
 #define	MSG_INIT		3		// write to the init string
 #define	MSG_MULTICAST	4		// for multicast()
-// MSG_CSQC (5) is defined once in server.h, not duplicated here.
+// MSG_CSQC (5) and MSG_ONE_NORECORD (6) are defined once in server.h.
+
+// MSG_ONE and MSG_ONE_NORECORD both go to msg_entity's reliable stream; only
+// MSG_ONE is mirrored into the MVD as a dem_single block.
+static qbool PF2_IsReliableOne(int dest)
+{
+	return dest == MSG_ONE || dest == MSG_ONE_NORECORD;
+}
 
 
 sizebuf_t *WriteDest2(int dest)
@@ -1196,6 +1203,7 @@ sizebuf_t *WriteDest2(int dest)
 		return &sv.datagram;
 
 	case MSG_ONE:
+	case MSG_ONE_NORECORD:
 		SV_Error("Shouldn't be at MSG_ONE");
 #if 0
 		ent = PROG_TO_EDICT(pr_global_struct->msg_entity);
@@ -1286,12 +1294,12 @@ void PF2_WriteByte(int to, int data)
 #ifdef FTE_PEXT_CSQC
 	PF2_WriteCheckCSQC(to, data);
 #endif
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, 1);
 		ClientReliableWrite_Byte(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, 1))
 			{
@@ -1308,12 +1316,12 @@ void PF2_WriteChar(int to, int data)
 #ifdef FTE_PEXT_CSQC
 	PF2_WriteCheckCSQC(to, data);
 #endif
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, 1);
 		ClientReliableWrite_Char(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, 1))
 			{
@@ -1327,12 +1335,12 @@ void PF2_WriteChar(int to, int data)
 
 void PF2_WriteShort(int to, int data)
 {
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, 2);
 		ClientReliableWrite_Short(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, 2))
 			{
@@ -1346,12 +1354,12 @@ void PF2_WriteShort(int to, int data)
 
 void PF2_WriteLong(int to, int data)
 {
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, 4);
 		ClientReliableWrite_Long(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, 4))
 			{
@@ -1365,7 +1373,7 @@ void PF2_WriteLong(int to, int data)
 
 void PF2_WriteAngle(int to, float data)
 {
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 #ifdef FTE_PEXT_FLOATCOORDS
 		int size = msg_anglesize;
@@ -1375,7 +1383,7 @@ void PF2_WriteAngle(int to, float data)
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, size);
 		ClientReliableWrite_Angle(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, size))
 			{
@@ -1389,7 +1397,7 @@ void PF2_WriteAngle(int to, float data)
 
 void PF2_WriteCoord(int to, float data)
 {
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 #ifdef FTE_PEXT_FLOATCOORDS
 		int size = msg_coordsize;
@@ -1399,7 +1407,7 @@ void PF2_WriteCoord(int to, float data)
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, size);
 		ClientReliableWrite_Coord(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, size))
 			{
@@ -1413,12 +1421,12 @@ void PF2_WriteCoord(int to, float data)
 
 void PF2_WriteString(int to, char *data)
 {
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, 1 + strlen(data));
 		ClientReliableWrite_String(cl, data);
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, 1 + strlen(data)))
 			{
@@ -1448,12 +1456,12 @@ void PF2_WriteString(int to, char *data)
 
 void PF2_WriteEntity(int to, int data)
 {
-	if (to == MSG_ONE)
+	if (PF2_IsReliableOne(to))
 	{
 		client_t *cl = Write_GetClient();
 		ClientReliableCheckBlock(cl, 2);
 		ClientReliableWrite_Short(cl,data );//G_EDICTNUM(OFS_PARM1)
-		if (sv.mvdrecording)
+		if (to == MSG_ONE && sv.mvdrecording)
 		{
 			if (MVDWrite_Begin(dem_single, cl - svs.clients, 2))
 			{
@@ -1676,9 +1684,17 @@ void PF2_infokey(int e1, char *key, char *valbuff, int sizebuff)
 		else if (!strcmp(key, "ping"))
 			snprintf(ov, sizeof(ov), "%d", (int)SV_CalcPing(cl));
 #ifdef FTE_PEXT_CSQC
-		else if (!strcmp(key, "csqcactive") || !strcmp(key, "*csqcactive") || !strcmp(key, "ezcsqc"))
+		else if (!strcmp(key, "csqcactive") || !strcmp(key, "*csqcactive"))
 		{
 			snprintf(ov, sizeof(ov), "%d", (int)cl->csqcactive);
+		}
+		else if (!strcmp(key, "ezcsqc"))
+		{	// csqcactive alone does not imply the EZCSQC payload contract
+			snprintf(ov, sizeof(ov), "%d", (int)SV_ClientSupportsEZCSQC(cl));
+		}
+		else if (!strcmp(key, "ezcsqc_ready"))
+		{
+			snprintf(ov, sizeof(ov), "%d", cl->ezcsqc_ready);
 		}
 #endif
 		else if (!strcmp(key, "*userid"))
