@@ -482,6 +482,20 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 		}
 	}
 #endif
+#if defined(FTE_PEXT_CSQC) && defined(MVD_PEXT1_EZCSQC)
+	// EZCSQC is a mod-defined payload contract carried over the CSQC transport,
+	// so it is opted in by the mod (KTX sets qwm_ezcsqc in GAME_INIT, which ran
+	// in PR_InitProg above) and only a PR2 mod can drive CSQC at all. The
+	// serverinfo key lets clients/browsers see it without connecting.
+	if (SV_CSQCActive() && Q_atof(Cvar_String("qwm_ezcsqc")) > 0) {
+		svs.mvdprotocolextension1 |= MVD_PEXT1_EZCSQC;
+		Info_SetValueForKey(svs.info, "ezcsqc", "1", MAX_SERVERINFO_STRING);
+	}
+	else {
+		svs.mvdprotocolextension1 &= ~MVD_PEXT1_EZCSQC;
+		Info_SetValueForKey(svs.info, "ezcsqc", "", MAX_SERVERINFO_STRING);
+	}
+#endif
 
 	// find optional QC-exported functions.
 	// we have it here, so we set it to NULL in case of PR2 progs.
@@ -523,6 +537,7 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 		// PR1 map would permanently disable CSQC for a client that connected
 		// on PR2, and a PR1 qcrequest is swallowed (not dropped) anyway.
 		svs.clients[i].csqcactive = false;
+		svs.clients[i].ezcsqc_ready = 0;
 		if (svs.clients[i].pendingcsqcbits)
 		{
 			Q_free(svs.clients[i].pendingcsqcbits);

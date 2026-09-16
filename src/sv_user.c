@@ -3147,6 +3147,7 @@ void SV_EnableClientsCSQC(void)
 		return;
 
 	sv_client->csqcactive = true;
+	sv_client->ezcsqc_ready = 0;	// the client re-acks the mod's setup payload
 
 	// arm the CSQC delta bitset now: SV_WriteEntitiesToClient would allocate it
 	// lazily a frame later, and sendflags set this frame would be dropped in the
@@ -3171,6 +3172,35 @@ void SV_DisableClientsCSQC(void)
 		return; // PR1 mod: no CSQC support, ignore the client request
 
 	sv_client->csqcactive = false;
+	sv_client->ezcsqc_ready = 0;
+}
+
+// EZCSQC rides on the CSQC transport, so it needs both: csqc running on the
+// client and the EZCSQC payload contract negotiated at connect.
+qbool SV_ClientSupportsEZCSQC (const client_t *cl)
+{
+#ifdef MVD_PEXT1_EZCSQC
+	return cl->csqcactive && (cl->mvdprotocolextensions1 & MVD_PEXT1_EZCSQC);
+#else
+	return false;
+#endif
+}
+
+// "ezcsqc_ready [version]": the client acknowledges the mod's reliable
+// svc_ezcsqc_setup payload and reports which EZCSQC revision it speaks. The mod
+// reads it back through infokey(player, "ezcsqc_ready").
+void SV_EZCSQCReady_f (void)
+{
+	if (!SV_ClientSupportsEZCSQC(sv_client))
+		return;
+
+	// Con_Printf, not SV_ClientPrintf: ucmds run under RD_CLIENT, so this
+	// reaches the client without also landing in the MVD, which a client
+	// toggling enablecsqc/ezcsqc_ready could otherwise fill with prints.
+	if (!sv_client->ezcsqc_ready)
+		Con_Printf("\nEZCSQC Antilag ready\n");
+
+	sv_client->ezcsqc_ready = !strcmp(Cmd_Argv(1), "2") ? 2 : 1;
 }
 #endif
 
@@ -3428,6 +3458,7 @@ static ucmd_t ucmds[] =
 #ifdef FTE_PEXT_CSQC
 	{"enablecsqc",	SV_EnableClientsCSQC, false},
 	{"disablecsqc",	SV_DisableClientsCSQC, false},
+	{"ezcsqc_ready", SV_EZCSQCReady_f, false},
 #endif
 
 	{"pext", Cmd_PEXT_f, false}, // user reply with supported protocol extensions.

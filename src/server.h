@@ -140,6 +140,11 @@ typedef struct
 #endif
 } server_t;
 
+// Message destination for PF2_Write*: reliable to msg_entity like MSG_ONE, but
+// never mirrored into the MVD (dem_single). For per-client payloads that
+// recorders/QTV must not see (EZCSQC setup).
+#define MSG_ONE_NORECORD	6
+
 #ifdef FTE_PEXT_CSQC
 
 #define MSG_CSQC		5		// for csqc (pr2_cmds.c WriteDest2)
@@ -155,6 +160,20 @@ typedef struct
 #ifndef svcfte_updatestatfloat
 #define svcfte_updatestatfloat	79	// [byte statnum] [float]
 #endif
+
+// EZCSQC: a narrow KTX-defined payload schema carried over the FTE CSQC
+// transport, parsed natively (no csprogs VM) by ezQuake. The engine only
+// negotiates it and never interprets the payloads. Not in the qwprot revision
+// mvdsv pins, so define locally; the #ifndef guards yield to qwprot once it
+// carries them (same pattern as the CSQC wire numbers dropped in 0aa4a5a).
+#ifdef PROTOCOL_VERSION_MVD1
+#ifndef MVD_PEXT1_EZCSQC
+#define MVD_PEXT1_EZCSQC	(1 << 10)	// client has a native EZCSQC parser
+#endif
+#ifndef svc_ezcsqc_setup
+#define svc_ezcsqc_setup	77	// reliable EZCSQC setup payload, written by the mod via MSG_ONE_NORECORD
+#endif
+#endif // PROTOCOL_VERSION_MVD1
 
 // per-entity CSQC delta flags, mirror of FTE server.h SENDFLAGS_*
 #define SENDFLAGS_PRESENT	0x1u	// this entity is present on that client
@@ -436,6 +455,7 @@ typedef struct client_s
 
 #ifdef FTE_PEXT_CSQC
 	qbool			csqcactive;
+	int				ezcsqc_ready;		// 0 = not ready, 1/2 = EZCSQC protocol version the client reported
 	uint64_t		*pendingcsqcbits;	// per-entity CSQC delta bits, size max_net_ents
 	int				max_net_ents;		// actual size of pendingcsqcbits
 	int				csqc_lastack;		// last outgoing seq known acknowledged (loss recovery)
@@ -1023,6 +1043,9 @@ void SV_UserInit (void);
 void SV_TogglePause (const char *msg, int bit);
 void ProcessUserInfoChange (client_t* sv_client, const char* key, const char* old_value);
 void SV_RotateCmd(client_t* cl, usercmd_t* cmd);
+#ifdef FTE_PEXT_CSQC
+qbool SV_ClientSupportsEZCSQC (const client_t *cl);	// csqcactive && EZCSQC negotiated
+#endif
 
 #ifdef FTE_PEXT2_VOICECHAT
 void SV_VoiceInitClient(client_t *client);
