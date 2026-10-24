@@ -1993,8 +1993,13 @@ addip <ip>
 removeip <ip>
 
 The ip address is specified in dot format, and any unspecified digits will match any value, so you can specify an entire class C network with "addip 192.246.40".
+Note that zero digits match any value too, "addip 10.0.0.1" matches 10.*.*.1. Use CIDR notation to avoid that: "addip 10.0.0.1/32".
 
-Removeip will only remove an address specified exactly the same way.  You cannot addip a subnet, then removeip a single host.
+Networks can be given in CIDR notation, "addip 192.246.40.0/24", IPv6 addresses too: "addip 2001:db8::/32".
+An IPv6 address without prefix length matches that single address. IPv6 addresses may be put in brackets: "addip [2001:db8::1]".
+IPv4 filters only match IPv4 addresses and IPv6 filters only match IPv6 addresses.
+
+Removeip will only remove a filter that is equal to the given one.  You cannot addip a subnet, then removeip a single host.
 
 listip
 Prints the current list of filters.
@@ -2013,14 +2018,6 @@ If 0, then only addresses matching the list will be allowed.  This lets you easi
 */
 
 
-/*typedef struct
-{
-	unsigned	mask;
-	unsigned	compare;
-	int			level;
-} ipfilter_t;
-*/
-
 #define	MAX_IPFILTERS	1024
 
 ipfilter_t	ipfilters[MAX_IPFILTERS];
@@ -2036,51 +2033,328 @@ int		numpenfilters;
 
 cvar_t	filterban = {"filterban", "1"};
 
+static int SV_FilterBytes (const ipfilter_t *f)
+{
+	return f->family == NA_IPV6 ? 16 : 4;
+}
+
+// 1 to 4 decimal octets separated by dots, missing octets are zero.
+static qbool SV_ParseOctets (const char *s, byte *b)
+{
+	int n = 0;
+
+	memset (b, 0, 4);
+
+	for (;;)
+	{
+		int v = 0, digits = 0;
+
+		while (*s >= '0' && *s <= '9')
+		{
+			v = v * 10 + (*s++ - '0');
+			if (++digits > 3)
+				return false;
+		}
+
+		if (!digits || v > 255)
+			return false;
+
+		b[n++] = v;
+
+		if (!*s)
+			return true;
+
+		if (*s != '.' || n == 4)
+			return false;
+
+		s++;
+	}
+}
+
+static void SV_PrefixToMask (int prefix, byte *mask, int len)
+{
+	int i;
+
+	for (i = 0; i < len; i++, prefix -= 8)
+		mask[i] = prefix >= 8 ? 0xff : (prefix <= 0 ? 0 : (byte)(0xff << (8 - prefix)));
+}
+
 /*
 =================
 StringToFilter
 =================
 */
-qbool StringToFilter (char *s, ipfilter_t *f)
+qbool StringToFilter (const char *in, ipfilter_t *f)
 {
-	char	num[128];
-	int		i, j;
-	byte	b[4];
-	byte	m[4];
+	char	s[128], *p;
+	int		i, len, colons = 0, prefix = -1;
 
-	for (i=0 ; i<4 ; i++)
+	memset (f, 0, sizeof(*f)); // NA_INVALID
+
+	if (strlcpy (s, in, sizeof(s)) >= sizeof(s))
+		return false;
+
+	// [v6], [v6]:port and [v6]/N
+	if (s[0] == '[')
 	{
-		b[i] = 0;
-		m[i] = 0;
+		char inner[sizeof(s)];
+
+		if (!(p = strchr (s, ']')) || p == s + 1)
+			return false;
+
+		*p++ = 0;
+		if (*p == ':')
+		{
+			// port is ignored, but nothing may follow it.
+			if (!p[1] || strspn (p + 1, "0123456789") != strlen (p + 1))
+				return false;
+			*p = 0;
+		}
+		else if (*p && *p != '/')
+			return false;
+
+		snprintf (inner, sizeof(inner), "%s%s", s + 1, p);
+		strlcpy (s, inner, sizeof(s));
 	}
 
-	for (i=0 ; i<4 ; i++)
+	// prefix length
+	if ((p = strchr (s, '/')))
 	{
-		if (*s < '0' || *s > '9')
+		*p++ = 0;
+		if (!*p || strlen (p) > 3 || strspn (p, "0123456789") != strlen (p))
+			return false;
+		prefix = atoi (p);
+	}
+
+	for (p = s; *p; p++)
+		colons += (*p == ':');
+
+	if (colons >= 2)
+	{
+		netadr_t adr;
+
+		// scope of link-local addresses is not part of filters.
+		if ((p = strchr (s, '%')))
+			*p = 0;
+
+		if (!NET_StringToAdrNumeric (s, &adr))
+			return false;
+
+		if (adr.type == NA_IPV6)
 		{
-			//Con_Printf ("Bad filter address: %s\n", s);
+			if (prefix < 0)
+				prefix = 128;
+			if (prefix > 128)
+				return false;
+
+			f->family = NA_IPV6;
+			memcpy (f->addr, adr.ip6, sizeof(adr.ip6));
+			len = 16;
+		}
+		else if (adr.type == NA_IP)
+		{
+			// ::ffff:a.b.c.d, it is an IPv4 address.
+			if (prefix < 0)
+				prefix = 128;
+			if (prefix < 96 || prefix > 128)
+				return false;
+
+			prefix -= 96;
+			f->family = NA_IP;
+			memcpy (f->addr, adr.ip, sizeof(adr.ip));
+			len = 4;
+		}
+		else
+		{
 			return false;
 		}
-
-		j = 0;
-		while (*s >= '0' && *s <= '9')
+	}
+	else
+	{
+		if (colons == 1)
 		{
-			num[j++] = *s++;
+			// a.b.c.d:port, port is ignored like it always was.
+			if (prefix >= 0)
+				return false;
+			*strchr (s, ':') = 0;
 		}
-		num[j] = 0;
-		b[i] = Q_atoi(num);
-		if (b[i] != 0)
-			m[i] = 255;
 
-		if (!*s)
-			break;
-		s++;
+		if (!SV_ParseOctets (s, f->addr))
+			return false;
+
+		f->family = NA_IP;
+		len = 4;
+
+		if (prefix < 0)
+		{
+			// legacy notation, zero octets match anything: "192.168" matches 192.168.*.*
+			for (i = 0; i < 4; i++)
+				f->mask[i] = f->addr[i] ? 0xff : 0;
+			return true;
+		}
+
+		if (prefix > 32)
+			return false;
 	}
 
-	f->mask = *(unsigned *)m;
-	f->compare = *(unsigned *)b;
+	SV_PrefixToMask (prefix, f->mask, len);
+
+	for (i = 0; i < len; i++)
+		f->addr[i] &= f->mask[i];
 
 	return true;
+}
+
+qbool SV_FilterMatch (const ipfilter_t *f, const netadr_t *adr)
+{
+	const byte	*b;
+	int			i, len;
+
+	if (f->family == NA_INVALID || f->family != adr->type)
+		return false;
+
+	b = NET_AdrBytes (adr, &len);
+
+	for (i = 0; i < len; i++)
+	{
+		if ((b[i] & f->mask[i]) != f->addr[i])
+			return false;
+	}
+
+	return true;
+}
+
+qbool SV_FilterEqual (const ipfilter_t *a, const ipfilter_t *b)
+{
+	int len = SV_FilterBytes (a);
+
+	return a->family != NA_INVALID && a->family == b->family
+		&& !memcmp (a->addr, b->addr, len) && !memcmp (a->mask, b->mask, len);
+}
+
+// filter matches every address of its family, such as 0.0.0.0 or ::/0
+static qbool SV_FilterMatchesAll (const ipfilter_t *f)
+{
+	int i, len = SV_FilterBytes (f);
+
+	for (i = 0; i < len; i++)
+	{
+		if (f->mask[i])
+			return false;
+	}
+
+	return true;
+}
+
+// filter which matches exactly one address.
+static qbool SV_FilterFromAdr (const netadr_t *adr, ipfilter_t *f)
+{
+	const byte	*b;
+	int			len;
+
+	memset (f, 0, sizeof(*f)); // NA_INVALID
+
+	if (!(b = NET_AdrBytes (adr, &len)))
+		return false;
+
+	f->family = adr->type;
+	memcpy (f->addr, b, len);
+	memset (f->mask, 0xff, len);
+
+	return true;
+}
+
+// filters which legacy dotted notation describes exactly, every IPv4 filter which existed before CIDR support.
+static qbool SV_FilterIsLegacy (const ipfilter_t *f)
+{
+	int i;
+
+	if (f->family != NA_IP)
+		return false;
+
+	for (i = 0; i < 4; i++)
+	{
+		if (f->mask[i] != (f->addr[i] ? 0xff : 0))
+			return false;
+	}
+
+	return true;
+}
+
+// number of leading one bits of a contiguous mask, -1 if mask has holes.
+static int SV_FilterPrefixLen (const ipfilter_t *f)
+{
+	int		i, bit, bits = 0, len = SV_FilterBytes (f);
+	qbool	ended = false;
+
+	for (i = 0; i < len; i++)
+	{
+		for (bit = 7; bit >= 0; bit--)
+		{
+			if (f->mask[i] & (1 << bit))
+			{
+				if (ended)
+					return -1;
+				bits++;
+			}
+			else
+			{
+				ended = true;
+			}
+		}
+	}
+
+	return bits;
+}
+
+const char *SV_FilterToString (const ipfilter_t *f, char *buf, size_t size)
+{
+	if (f->family == NA_IP)
+	{
+		if (SV_FilterIsLegacy (f))
+			snprintf (buf, size, "%i.%i.%i.%i", f->addr[0], f->addr[1], f->addr[2], f->addr[3]);
+		else
+			snprintf (buf, size, "%i.%i.%i.%i/%i", f->addr[0], f->addr[1], f->addr[2], f->addr[3], SV_FilterPrefixLen (f));
+	}
+	else if (f->family == NA_IPV6)
+	{
+		netadr_t adr;
+
+		memset (&adr, 0, sizeof(adr));
+		adr.type = NA_IPV6;
+		memcpy (adr.ip6, f->addr, sizeof(adr.ip6));
+		snprintf (buf, size, "%s/%i", NET_BaseAdrToString (adr), SV_FilterPrefixLen (f));
+	}
+	else
+	{
+		strlcpy (buf, "invalid", size);
+	}
+
+	return buf;
+}
+
+// same as SV_FilterToString, but legacy IPv4 filters keep their padded "%3i.%3i.%3i.%3i" console look.
+static const char *SV_FilterToListString (const ipfilter_t *f, char *buf, size_t size)
+{
+	if (SV_FilterIsLegacy (f))
+	{
+		snprintf (buf, size, "%3i.%3i.%3i.%3i", f->addr[0], f->addr[1], f->addr[2], f->addr[3]);
+		return buf;
+	}
+
+	return SV_FilterToString (f, buf, size);
+}
+
+// width of the address column when listing filters, legacy IPv4 filters are 15 chars.
+static int SV_FilterListWidth (const ipfilter_t *list, int count)
+{
+	char	buf[IPFILTER_STRLEN];
+	int		i, w = 15;
+
+	for (i = 0; i < count; i++)
+		w = max (w, (int) strlen (SV_FilterToListString (&list[i], buf, sizeof(buf))));
+
+	return w;
 }
 
 /*
@@ -2093,7 +2367,7 @@ static void SV_AddIPVIP_f (void)
 	int		i, l;
 	ipfilter_t f;
 
-	if (!StringToFilter (Cmd_Argv(1), &f))
+	if (!StringToFilter (Cmd_Argv(1), &f) || SV_FilterMatchesAll (&f))
 	{
 		Con_Printf ("Bad filter address: %s\n", Cmd_Argv(1));
 		return;
@@ -2104,8 +2378,7 @@ static void SV_AddIPVIP_f (void)
 	if (l < 1) l = 1;
 
 	for (i=0 ; i<numipvips ; i++)
-		if (ipvip[i].compare == 0xffffffff || (ipvip[i].mask == f.mask
-		                                       && ipvip[i].compare == f.compare))
+		if (ipvip[i].family == NA_INVALID || SV_FilterEqual (&ipvip[i], &f))
 			break;		// free spot
 	if (i == numipvips)
 	{
@@ -2137,8 +2410,7 @@ static void SV_RemoveIPVIP_f (void)
 		return;
 	}
 	for (i=0 ; i<numipvips ; i++)
-		if (ipvip[i].mask == f.mask
-		        && ipvip[i].compare == f.compare)
+		if (SV_FilterEqual (&ipvip[i], &f))
 		{
 			for (j=i+1 ; j<numipvips ; j++)
 				ipvip[j-1] = ipvip[j];
@@ -2156,14 +2428,13 @@ SV_ListIP_f
 */
 static void SV_ListIPVIP_f (void)
 {
-	int		i;
-	byte	b[4];
+	int		i, w = SV_FilterListWidth (ipvip, numipvips);
+	char	buf[IPFILTER_STRLEN];
 
 	Con_Printf ("VIP list:\n");
 	for (i=0 ; i<numipvips ; i++)
 	{
-		*(unsigned *)b = ipvip[i].compare;
-		Con_Printf ("%3i.%3i.%3i.%3i   level %d\n", b[0], b[1], b[2], b[3], ipvip[i].level);
+		Con_Printf ("%-*s   level %d\n", w, SV_FilterToListString (&ipvip[i], buf, sizeof(buf)), ipvip[i].level);
 	}
 }
 
@@ -2176,7 +2447,7 @@ static void SV_WriteIPVIP_f (void)
 {
 	FILE	*f;
 	char	name[MAX_OSPATH];
-	byte	b[4];
+	char	buf[IPFILTER_STRLEN];
 	int		i;
 
 	snprintf (name, MAX_OSPATH, "%s/vip_ip.cfg", fs_gamedir);
@@ -2192,8 +2463,7 @@ static void SV_WriteIPVIP_f (void)
 
 	for (i=0 ; i<numipvips ; i++)
 	{
-		*(unsigned *)b = ipvip[i].compare;
-		fprintf (f, "vip_addip %i.%i.%i.%i %d\n", b[0], b[1], b[2], b[3], ipvip[i].level);
+		fprintf (f, "vip_addip %s %d\n", SV_FilterToString (&ipvip[i], buf, sizeof(buf)), ipvip[i].level);
 	}
 
 	fclose (f);
@@ -2217,7 +2487,7 @@ static void SV_AddIP_f (void)
 	ipfilter_t f;
 	ipfiltertype_t ipft = ipft_ban; // default is ban
 
-	if (!StringToFilter (Cmd_Argv(1), &f) || f.compare == 0)
+	if (!StringToFilter (Cmd_Argv(1), &f) || SV_FilterMatchesAll (&f))
 	{
 		Con_Printf ("Bad filter address: %s\n", Cmd_Argv(1));
 		return;
@@ -2247,8 +2517,7 @@ static void SV_AddIP_f (void)
 	f.type = ipft;
 
 	for (i=0 ; i<numipfilters ; i++)
-		if (ipfilters[i].compare == 0xffffffff || (ipfilters[i].mask == f.mask
-		        && ipfilters[i].compare == f.compare))
+		if (ipfilters[i].family == NA_INVALID || SV_FilterEqual (&ipfilters[i], &f))
 			break;		// free spot
 	if (i == numipfilters)
 	{
@@ -2280,8 +2549,7 @@ static void SV_RemoveIP_f (void)
 	}
 
 	for (i=0 ; i<numipfilters ; i++)
-		if (ipfilters[i].mask == f.mask
-		        && ipfilters[i].compare == f.compare)
+		if (SV_FilterEqual (&ipfilters[i], &f))
 		{
 			for (j=i+1 ; j<numipfilters ; j++)
 				ipfilters[j-1] = ipfilters[j];
@@ -2300,14 +2568,13 @@ SV_ListIP_f
 static void SV_ListIP_f (void)
 {
 	time_t	long_time = time(NULL);
-	int		i;
-	byte	b[4];
+	int		i, w = SV_FilterListWidth (ipfilters, numipfilters);
+	char	buf[IPFILTER_STRLEN];
 
 	Con_Printf ("Filter list:\n");
 	for (i=0 ; i<numipfilters ; i++)
 	{
-		*(unsigned *)b = ipfilters[i].compare;
-		Con_Printf ("%3i.%3i.%3i.%3i | ", b[0], b[1], b[2], b[3]);
+		Con_Printf ("%-*s | ", w, SV_FilterToListString (&ipfilters[i], buf, sizeof(buf)));
 		switch((int)ipfilters[i].type){
 			case ipft_ban:  Con_Printf (" ban"); break;
 			case ipft_safe: Con_Printf ("safe"); break;
@@ -2328,7 +2595,7 @@ static void SV_WriteIP_f (void)
 {
 	FILE	*f;
 	char	name[MAX_OSPATH], *s;
-	byte	b[4];
+	char	buf[IPFILTER_STRLEN];
 	int		i;
 
 	snprintf (name, MAX_OSPATH, "%s/listip.cfg", fs_gamedir);
@@ -2348,8 +2615,7 @@ static void SV_WriteIP_f (void)
 		if(ipfilters[i].type != ipft_safe)
 			continue;
 
-		*(unsigned *)b = ipfilters[i].compare;
-		fprintf (f, "addip %i.%i.%i.%i safe %.0f\n", b[0], b[1], b[2], b[3], ipfilters[i].time);
+		fprintf (f, "addip %s safe %.0f\n", SV_FilterToString (&ipfilters[i], buf, sizeof(buf)), ipfilters[i].time);
 	}
 
 	for (i=0 ; i<numipfilters ; i++)
@@ -2362,8 +2628,7 @@ static void SV_WriteIP_f (void)
 			case ipft_safe: s = "safe"; break;
 			default: s = "unkn"; break;
 		}
-		*(unsigned *)b = ipfilters[i].compare;
-		fprintf (f, "addip %i.%i.%i.%i %s %.0f\n", b[0], b[1], b[2], b[3], s, ipfilters[i].time);
+		fprintf (f, "addip %s %s %.0f\n", SV_FilterToString (&ipfilters[i], buf, sizeof(buf)), s, ipfilters[i].time);
 	}
 
 	fclose (f);
@@ -2397,12 +2662,9 @@ SV_FilterPacket
 qbool SV_FilterPacket (void)
 {
 	int		i;
-	unsigned	in;
-
-	in = *(unsigned *)net_from.ip;
 
 	for (i=0 ; i<numipfilters ; i++)
-		if ( ipfilters[i].type == ipft_ban && (in & ipfilters[i].mask) == ipfilters[i].compare )
+		if ( ipfilters[i].type == ipft_ban && SV_FilterMatch (&ipfilters[i], &net_from) )
 			return (int)filterban.value;
 
 	return !(int)filterban.value;
@@ -2412,19 +2674,18 @@ qbool SV_FilterPacket (void)
 
 #define AF_REAL_ADMIN    (1<<1)    // pass/vip granted admin.
 
-void Do_BanList(ipfiltertype_t ipft)
+static void Do_BanList(ipfiltertype_t ipft, int width)
 {
 	time_t	long_time = time(NULL);
 	int		i;
-	byte	b[4];
+	char	buf[IPFILTER_STRLEN];
 
 	for (i=0 ; i<numipfilters ; i++)
 	{
 		if (ipfilters[i].type != ipft)
 			continue;
 
-		*(unsigned *)b = ipfilters[i].compare;
-		Con_Printf ("%3i|%3i.%3i.%3i.%3i", i, b[0], b[1], b[2], b[3]);
+		Con_Printf ("%3i|%-*s", i, width, SV_FilterToListString (&ipfilters[i], buf, sizeof(buf)));
 		switch((int)ipfilters[i].type){
 			case ipft_ban:  Con_Printf ("| ban"); break;
 			case ipft_safe: Con_Printf ("|safe"); break;
@@ -2458,31 +2719,40 @@ void Do_BanList(ipfiltertype_t ipft)
 void SV_BanList (void)
 {
 	unsigned char blist[64] = "Ban list:", id[64] = "id", ipmask[64] = "ip mask", type[64] = "type", expire[64] = "expire";
+	char	line[IPFILTER_STRLEN + 32];
+	int		i, w;
 
 	if (numipfilters < 1) {
 		Con_Printf ("Ban list: empty\n");
 		return;
 	}
 
-	Con_Printf ("%s\n"
-				"\235\236\236\236\236\236\236\236\236\236\236\236\236\236\236\236"
-				"\236\236\236\236\236\236\236\236\236\236\236\236\236\236\236\236\236\237\n"
-				"%3.3s|%15.15s|%4.4s|%9.9s\n",
-				Q_redtext(blist), Q_redtext(id), Q_redtext(ipmask), Q_redtext(type), Q_redtext(expire));
+	// address column is 15 chars wide unless there are longer (IPv6) filters.
+	w = SV_FilterListWidth (ipfilters, numipfilters);
 
-	Do_BanList(ipft_safe);
-	Do_BanList(ipft_ban);
+	// underline as wide as the "id|ip mask|type|expire" header.
+	line[0] = '\235';
+	for (i = 1; i < w + 18; i++)
+		line[i] = '\236';
+	line[i++] = '\237';
+	line[i] = 0;
+
+	Con_Printf ("%s\n%s\n%3.3s|%*.*s|%4.4s|%9.9s\n",
+				Q_redtext(blist), line, Q_redtext(id), w, w, Q_redtext(ipmask), Q_redtext(type), Q_redtext(expire));
+
+	Do_BanList(ipft_safe, w);
+	Do_BanList(ipft_ban, w);
 }
 
 qbool SV_CanAddBan (ipfilter_t *f)
 {
 	int i;
 
-	if (f->compare == 0)
+	if (SV_FilterMatchesAll (f))
 		return false;
 
 	for (i=0 ; i<numipfilters ; i++)
-		if (ipfilters[i].mask == f->mask && ipfilters[i].compare == f->compare && ipfilters[i].type == ipft_safe)
+		if (SV_FilterEqual (&ipfilters[i], f) && ipfilters[i].type == ipft_safe)
 			return false; // can't add filter f because present "safe" filter
 
 	return true;
@@ -2526,6 +2796,7 @@ void SV_Cmd_Ban_f(void)
 	int			uid;
 	int			c;
 	char		reason[80] = "", arg2[32], arg2c[sizeof(arg2)], *s;
+	char		buf[IPFILTER_STRLEN];
 
 	// set up the edict
 	ent = sv_client->edict;
@@ -2590,7 +2861,7 @@ void SV_Cmd_Ban_f(void)
 			}
 
 			s = NET_BaseAdrToString(cl->netchan.remote_address);
-			if (!StringToFilter (s, &f))
+			if (!SV_FilterFromAdr (&cl->netchan.remote_address, &f))
 			{
 				Con_Printf ("ban: bad ip address: %s\n", s);
 				return;
@@ -2604,7 +2875,7 @@ void SV_Cmd_Ban_f(void)
 
 			SV_BroadcastPrintf (PRINT_HIGH, "%s was banned for %d%s%s\n", cl->name, t, arg2c, reason);
 
-			Cbuf_AddText(va("addip %s ban %s%.0lf\n", s, d ? "+" : "", d));
+			Cbuf_AddText(va("addip %s ban %s%.0lf\n", SV_FilterToString (&f, buf, sizeof(buf)), d ? "+" : "", d));
 			Cbuf_AddText("writeip\n");
 			return;
 		}
@@ -2617,7 +2888,7 @@ void SV_Cmd_Banip_f(void)
 {
 	edict_t	*ent;
 	eval_t *val;
-	byte	b[4];
+	char	buf[IPFILTER_STRLEN];
 	double		d;
 	int			c, t;
 	ipfilter_t  f;
@@ -2674,10 +2945,9 @@ void SV_Cmd_Banip_f(void)
 		return;
 	}
 
-	*(unsigned *)b = f.compare;
-	SV_BroadcastPrintf (PRINT_HIGH, "%3i.%3i.%3i.%3i was banned for %d%s\n", b[0], b[1], b[2], b[3], t, arg2c);
+	SV_BroadcastPrintf (PRINT_HIGH, "%s was banned for %d%s\n", SV_FilterToListString (&f, buf, sizeof(buf)), t, arg2c);
 
-	Cbuf_AddText(va("addip %i.%i.%i.%i ban %s%.0lf\n", b[0], b[1], b[2], b[3], d ? "+" : "", d));
+	Cbuf_AddText(va("addip %s ban %s%.0lf\n", SV_FilterToString (&f, buf, sizeof(buf)), d ? "+" : "", d));
 	Cbuf_AddText("writeip\n");
 }
 
@@ -2685,7 +2955,7 @@ void SV_Cmd_Banremove_f(void)
 {
 	edict_t	*ent;
 	eval_t *val;
-	byte	b[4];
+	char	buf[IPFILTER_STRLEN];
 	int		id;
 
 	// set up the edict
@@ -2720,8 +2990,7 @@ void SV_Cmd_Banremove_f(void)
 		return;
 	}
 
-	*(unsigned *)b = ipfilters[id].compare;
-	SV_BroadcastPrintf (PRINT_HIGH, "%3i.%3i.%3i.%3i was unbanned\n", b[0], b[1], b[2], b[3]);
+	SV_BroadcastPrintf (PRINT_HIGH, "%s was unbanned\n", SV_FilterToListString (&ipfilters[id], buf, sizeof(buf)));
 
 	SV_RemoveBansIPFilter (id);
 	Cbuf_AddText("writeip\n");
@@ -2737,12 +3006,9 @@ SV_VIPbyIP
 int SV_VIPbyIP (netadr_t adr)
 {
 	int		i;
-	unsigned	in;
-
-	in = *(unsigned *)adr.ip;
 
 	for (i=0 ; i<numipvips ; i++)
-		if ( (in & ipvip[i].mask) == ipvip[i].compare)
+		if (SV_FilterMatch (&ipvip[i], &adr))
 			return ipvip[i].level;
 
 	return 0;
@@ -2911,34 +3177,25 @@ static void SV_CleanIPList (void)
 	}
 }
 
-static qbool SV_IPCompare (byte *a, byte *b)
+// address penalties are bound to: real ip when known, otherwise the address client is connected from.
+static netadr_t SV_PenaltyAdr (client_t *cl)
 {
-	int i;
+	netadr_t adr = (cl->realip.type != NA_INVALID) ? cl->realip : cl->netchan.remote_address;
 
-	for (i = 0; i < 1; i++)
-		if (((unsigned int *)a)[i] != ((unsigned int *)b)[i])
-			return false;
-
-	return true;
-}
-
-static void SV_IPCopy (byte *dest, byte *src)
-{
-	int i;
-
-	for (i = 0; i < 1; i++)
-		((unsigned int *)dest)[i] = ((unsigned int *)src)[i];
+	adr.port = 0;
+	return adr;
 }
 
 void SV_SavePenaltyFilter (client_t *cl, filtertype_t type, double pentime)
 {
 	int i;
+	netadr_t adr = SV_PenaltyAdr (cl);
 
 	if (pentime < curtime)   // no point
 		return;
 
 	for (i = 0; i < numpenfilters; i++)
-		if (SV_IPCompare (penfilters[i].ip, cl->realip.ip)	&& penfilters[i].type == type)
+		if (NET_CompareBaseAdr (penfilters[i].adr, adr) && penfilters[i].type == type)
 		{
 			return;
 		}
@@ -2948,7 +3205,7 @@ void SV_SavePenaltyFilter (client_t *cl, filtertype_t type, double pentime)
 		return;
 	}
 
-	SV_IPCopy (penfilters[numpenfilters].ip, cl->realip.ip);
+	penfilters[numpenfilters].adr = adr;
 	penfilters[numpenfilters].time = pentime;
 	penfilters[numpenfilters].type = type;
 	numpenfilters++;
@@ -2958,11 +3215,12 @@ double SV_RestorePenaltyFilter (client_t *cl, filtertype_t type)
 {
 	int i;
 	double time1 = 0.0;
+	netadr_t adr = SV_PenaltyAdr (cl);
 
 	// search for existing penalty filter of same type
 	for (i = 0; i < numpenfilters; i++)
 	{
-		if (type == penfilters[i].type && SV_IPCompare (cl->realip.ip, penfilters[i].ip))
+		if (type == penfilters[i].type && NET_CompareBaseAdr (adr, penfilters[i].adr))
 		{
 			time1 = penfilters[i].time;
 			SV_RemoveIPFilter (i);

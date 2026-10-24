@@ -1113,11 +1113,8 @@ void SV_ListPenalty_f (void)
 		case ft_cuff: strlcpy(s, "Cuff", sizeof(s)); break;
 		default: strlcpy(s, "Unknown", sizeof(s)); break;
 		}
-		Con_Printf ("%i: %s for %i.%i.%i.%i (remaining: %d)\n", i, s,
-		            penfilters[i].ip[0],
-		            penfilters[i].ip[1],
-		            penfilters[i].ip[2],
-		            penfilters[i].ip[3],
+		Con_Printf ("%i: %s for %s (remaining: %d)\n", i, s,
+		            NET_BaseAdrToString (penfilters[i].adr),
 		            (penfilters[i].time) ? (int)(penfilters[i].time - realtime) : 0);
 	}
 }

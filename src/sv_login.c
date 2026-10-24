@@ -33,6 +33,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define MAX_ACCOUNTS 1000
 #define MAX_FAILURES 10
 #define MAX_LOGINNAME (DIGEST_SIZE * 2 + 1)
+#define MAX_ACCOUNTNAME 48 // account name, also fits IP accounts like "2001:db8:1234:5678:9abc:def0:1234:5678/128"
 #define ACC_FILE "accounts"
 #define ACC_DIR "users"
 
@@ -62,7 +63,7 @@ typedef enum { use_log, use_ip } quse_t;
 
 typedef struct
 {
-	char        login[MAX_LOGINNAME];
+	char        login[MAX_ACCOUNTNAME];
 	char        pass[MAX_LOGINNAME];
 	int         failures;
 	int         inuse;
@@ -137,7 +138,25 @@ SV_LoadAccounts
 loads account list from disk
 =================
 */
-qbool StringToFilter(char* s, ipfilter_t* f);
+/*
+=================
+StringToAccountFilter
+
+IP account names are an address or, with a prefix length, a network.
+A plain address only matches itself, unlike in ban filters zero octets are not wildcards.
+=================
+*/
+static qbool StringToAccountFilter(const char* s, ipfilter_t* f)
+{
+	if (!StringToFilter(s, f))
+		return false;
+
+	if (!strchr(s, '/'))
+		memset(f->mask, 0xff, f->family == NA_IPV6 ? 16 : 4);
+
+	return true;
+}
+
 void SV_LoadAccounts(void)
 {
 	int i;
@@ -165,12 +184,12 @@ void SV_LoadAccounts(void)
 	while (!feof(f))
 	{
 		memset(acc, 0, sizeof(account_t));
-		// cap %s reads at MAX_LOGINNAME-1 (40); login/pass are char[MAX_LOGINNAME]
-		if (fscanf(f, "%40s", acc->login) != 1) {
+		// cap %s reads at MAX_ACCOUNTNAME-1 (47) for login and MAX_LOGINNAME-1 (40) for pass
+		if (fscanf(f, "%47s", acc->login) != 1) {
 			Con_Printf("Error reading account data\n");
 			break;
 		}
-		if (StringToFilter(acc->login, &acc->address))
+		if (StringToAccountFilter(acc->login, &acc->address))
 		{
 			strlcpy(acc->pass, acc->login, MAX_LOGINNAME);
 			acc->use = use_ip;
@@ -208,7 +227,7 @@ void SV_LoadAccounts(void)
 
 		for (i = 0, acc = accounts; i < num_accounts; i++, acc++)
 			if ((acc->use == use_log && !strncmp(acc->login, cl->login, CLIENT_LOGIN_LEN))
-				|| (acc->use == use_ip && !strcmp(acc->login, va("%d.%d.%d.%d", cl->realip.ip[0], cl->realip.ip[1], cl->realip.ip[2], cl->realip.ip[3]))))
+				|| (acc->use == use_ip && SV_FilterMatch(&acc->address, &cl->realip)))
 				break;
 
 		if (i < num_accounts && acc->state == a_ok)
@@ -257,7 +276,7 @@ void SV_CreateAccount_f(void)
 		return;
 	}
 
-	if (StringToFilter(Cmd_Argv(1), &adr))
+	if (StringToAccountFilter(Cmd_Argv(1), &adr))
 	{
 		use = use_ip;
 		if (Cmd_Argc() < 3)
@@ -294,7 +313,8 @@ void SV_CreateAccount_f(void)
 		}
 
 		if (!strcasecmp(accounts[i].login, Cmd_Argv(1)) ||
-			(use == use_ip && !strcasecmp(accounts[i].login, Cmd_Argv(2))))
+			(use == use_ip && !strcasecmp(accounts[i].login, Cmd_Argv(2))) ||
+			(use == use_ip && accounts[i].use == use_ip && SV_FilterEqual(&accounts[i].address, &adr)))
 			break;
 
 		c++;
@@ -311,7 +331,7 @@ void SV_CreateAccount_f(void)
 
 	// create an account
 	num_accounts++;
-	strlcpy(accounts[spot].login, Cmd_Argv(1), MAX_LOGINNAME);
+	strlcpy(accounts[spot].login, Cmd_Argv(1), MAX_ACCOUNTNAME);
 	if (Cmd_Argc() == 3)
 		i = 2;
 	else
@@ -321,6 +341,10 @@ void SV_CreateAccount_f(void)
 
 	accounts[spot].state = a_ok;
 	accounts[spot].use = use;
+	if (use == use_ip)
+		accounts[spot].address = adr;
+	else
+		memset(&accounts[spot].address, 0, sizeof(accounts[spot].address));
 
 	Con_Printf("login %s created\n", Cmd_Argv(1));
 	WriteAccounts();
@@ -414,7 +438,7 @@ void SV_ListAccount_f(void)
 	{
 		if (accounts[i].state != a_free)
 		{
-			Con_Printf("%.16s %s\n", accounts[i].login, accounts[i].state == a_ok ? "" : "blocked");
+			Con_Printf("%s %s\n", accounts[i].login, accounts[i].state == a_ok ? "" : "blocked");
 			c++;
 		}
 	}
@@ -552,6 +576,46 @@ static int checklogin(char* log1, char* pass, quse_t use)
 	return 0;
 }
 
+/*
+=================
+checkiplogin
+
+returns positive value if there is an IP account for the address
+values <= 0 indicates a failure
+=================
+*/
+static int checkiplogin(const netadr_t* adr)
+{
+	int i, c;
+
+	if (adr->type == NA_INVALID)
+		return 0;
+
+	for (i = 0, c = 0; c < num_accounts; i++)
+	{
+		if (accounts[i].state == a_free)
+			continue;
+
+		if (accounts[i].use == use_ip && SV_FilterMatch(&accounts[i].address, adr))
+		{
+			if (accounts[i].state == a_blocked)
+				return -2;
+
+			// Only do logins/failures if using file-based login list
+			if (LoginMustHaveLocalAccount()) {
+				accounts[i].failures = 0;
+				accounts[i].inuse++;
+			}
+
+			return i + 1;
+		}
+
+		c++;
+	}
+
+	return 0;
+}
+
 void Login_Init(void)
 {
 	Cvar_Register(&sv_login);
@@ -579,7 +643,6 @@ called on connect after cmd new is issued
 qbool SV_Login(client_t* cl)
 {
 	extern cvar_t sv_registrationinfo;
-	char* ip;
 
 	// is sv_login is disabled, login is not necessery
 	if (!(int)sv_login.value) {
@@ -605,8 +668,7 @@ qbool SV_Login(client_t* cl)
 	}
 
 	// check for account for ip
-	ip = va("%d.%d.%d.%d", cl->realip.ip[0], cl->realip.ip[1], cl->realip.ip[2], cl->realip.ip[3]);
-	if ((cl->logged = checklogin(ip, ip, use_ip)) > 0)
+	if ((cl->logged = checkiplogin(&cl->realip)) > 0)
 	{
 		strlcpy(cl->login, accounts[cl->logged - 1].pass, CLIENT_LOGIN_LEN);
 		return true;

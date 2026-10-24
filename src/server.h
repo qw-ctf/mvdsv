@@ -866,13 +866,17 @@ typedef enum {
 	ipft_safe
 } ipfiltertype_t;
 
+#define IPFILTER_BYTES	16	// enough for IPv6
+#define IPFILTER_STRLEN	64	// enough for "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128"
+
 typedef struct
 {
-	unsigned	mask;
-	unsigned	compare;
-	int			level;
-	double		time; // for ban expiration
-	ipfiltertype_t type;
+	netadrtype_t	family;					// NA_IP or NA_IPV6, NA_INVALID for unused entry
+	byte			addr[IPFILTER_BYTES];	// network byte order, already masked, IPv4 uses first 4 bytes
+	byte			mask[IPFILTER_BYTES];	// per byte mask, legacy IPv4 filters may have holes: 10.0.0.1 matches 10.*.*.1
+	int				level;
+	double			time; // for ban expiration
+	ipfiltertype_t	type;
 } ipfilter_t;
 
 //bliP: penalty filters ->
@@ -883,8 +887,8 @@ typedef enum {
 
 typedef struct
 {
-	byte		ip[4];
-	double		time;
+	netadr_t		adr;	// address of penalized client, port is zero
+	double			time;
 	filtertype_t	type;
 } penfilter_t;
 //<-
@@ -943,10 +947,17 @@ void SV_RemoveDirectory_f (void);
 
 #define	MAX_PENFILTERS 512
 void SV_RemoveIPFilter (int i);
-//static qbool SV_IPCompare (byte *a, byte *b);
-//static void SV_IPCopy (byte *dest, byte *src);
 void SV_SavePenaltyFilter (client_t *cl, filtertype_t type, double pentime);
 double SV_RestorePenaltyFilter (client_t *cl, filtertype_t type);
+
+// parse address filter: legacy IPv4 "a.b.c.d" where zero octets match anything, "a.b.c.d/N", "v6", "v6/N", "[v6]".
+qbool StringToFilter (const char *s, ipfilter_t *f);
+// true if address matches the filter, addresses never match filters of other address family.
+qbool SV_FilterMatch (const ipfilter_t *f, const netadr_t *adr);
+// true if both filters match the same addresses.
+qbool SV_FilterEqual (const ipfilter_t *a, const ipfilter_t *b);
+// print filter in a form StringToFilter() parses back to the same filter.
+const char *SV_FilterToString (const ipfilter_t *f, char *buf, size_t size);
 
 qbool SV_FilterPacket (void);
 void SV_SendBan (void);
