@@ -114,12 +114,11 @@ static void SetUpClientEdict (client_t *cl, edict_t *ent);
 
 static qbool IsLocalIP(netadr_t a)
 {
-	return a.ip[0] == 10 || (a.ip[0] == 172 && (a.ip[1] & 0xF0) == 16)
-	       || (a.ip[0] == 192 && a.ip[1] == 168) || a.ip[0] >= 224;
+	return NET_IsPrivateAdr(a);
 }
 static qbool IsInetIP(netadr_t a)
 {
-	return a.ip[0] != 127 && !IsLocalIP(a);
+	return !NET_IsLoopbackAdr(a) && !NET_IsPrivateAdr(a);
 }
 
 //
@@ -226,6 +225,7 @@ static void Cmd_New_f (void)
 	char		*gamedir;
 	int			playernum;
 	extern cvar_t sv_serverip;
+	extern cvar_t sv_serverip6;
 	extern cvar_t sv_getrealip;
 
 	if (sv_client->state == cs_spawned)
@@ -250,18 +250,22 @@ static void Cmd_New_f (void)
 	}
 
 	// do not proceed if realip is unknown
-    if (sv_client->state == cs_preconnected && !sv_client->realip.ip[0] && (int)sv_getrealip.value)
+    if (sv_client->state == cs_preconnected && sv_client->realip.type == NA_INVALID && (int)sv_getrealip.value)
 	{
-		char *server_ip = sv_serverip.string[0] ? sv_serverip.string : NET_AdrToString(net_local_sv_ipadr);
+		// client is asked to send a packet to the server address of the family it is connected with.
+		netadr_t remote = sv_client->netchan.remote_address;
+		qbool is6 = (remote.type == NA_IPV6);
+		netadr_t local = is6 ? net_local_sv_ip6adr : net_local_sv_ipadr;
+		cvar_t *serverip = is6 ? &sv_serverip6 : &sv_serverip;
+		char *server_ip = serverip->string[0] ? serverip->string : NET_AdrToString(local); // IPv6 is [addr]:port
+		qbool same_scope = (IsLocalIP(local) && IsLocalIP(remote)) || (IsInetIP(local) && IsInetIP(remote));
 
-		if (!((IsLocalIP(net_local_sv_ipadr) && IsLocalIP(sv_client->netchan.remote_address))  ||
-		        (IsInetIP (net_local_sv_ipadr) && IsInetIP (sv_client->netchan.remote_address))) &&
-		        sv_client->netchan.remote_address.ip[0] != 127 && !sv_serverip.string[0])
+		if ((local.type == NA_INVALID || !same_scope) && !NET_IsLoopbackAdr(remote) && !serverip->string[0])
 		{
 			Sys_Printf ("WARNING: Incorrect server ip address: %s\n"
-			            "Set hostname in your operation system or set correctly sv_serverip cvar.\n",
-			            server_ip);
-			*(int *)&sv_client->realip = *(int *)&sv_client->netchan.remote_address;
+			            "Set hostname in your operation system or set correctly %s cvar.\n",
+			            server_ip, serverip->name);
+			sv_client->realip = sv_client->netchan.remote_address;
 			sv_client->state = cs_connected;
 		}
 		else

@@ -140,6 +140,7 @@ cvar_t	pausable = {"pausable", "0"};
 cvar_t	sv_maxrate = {"sv_maxrate", "0"};
 cvar_t	sv_getrealip = {"sv_getrealip", "1"};
 cvar_t	sv_serverip = {"sv_serverip", ""};
+cvar_t	sv_serverip6 = {"sv_serverip6", ""}; // as sv_serverip, for clients connected over IPv6, e.g. "[2001:db8::1]:27500"
 cvar_t	sv_forcespec_onfull = {"sv_forcespec_onfull", "2"};
 cvar_t	sv_maxdownloadrate = {"sv_maxdownloadrate", "0"};
 cvar_t	sv_idlesleep = {"sv_idlesleep", "0"};
@@ -1900,9 +1901,11 @@ static void SVC_IP(void)
 		return;
 
 	// don't override previously set ip
-	if (client->realip.ip[0])
+	if (client->realip.type != NA_INVALID)
 		return;
 
+	// NOTE: real ip may be of other address family than the address client is connected from,
+	// bans and VIP filters are matched against each address in its own family.
 	client->realip = net_from;
 
 	// if banned drop
@@ -2991,9 +2994,10 @@ static qbool SV_StunBindingPacket(void)
 	static const byte magic_cookie[4] = { 0x21, 0x12, 0xA4, 0x42 };
 	byte *data = net_message.data;
 	byte *port = (byte *) &net_from.port; // already network byte order
-	byte response[STUN_HEADER_SIZE + 12];
+	byte response[STUN_HEADER_SIZE + 4 + 20]; // an IPv6 XOR-MAPPED-ADDRESS is the longest
+	const byte *addr;
 	int len = net_message.cursize;
-	int pos, attr_len, i;
+	int pos, attr_len, addr_len, i;
 
 	if (len < STUN_HEADER_SIZE || memcmp(data + 4, magic_cookie, 4)) {
 		return false;
@@ -3017,25 +3021,33 @@ static qbool SV_StunBindingPacket(void)
 		return true;
 	}
 
+	// 4 bytes for IPv4, 16 for IPv6
+	addr = NET_AdrBytes(&net_from, &addr_len);
+	if (!addr) {
+		return true;
+	}
+
 	// cookie and transaction id echo back
 	memcpy(response, data, STUN_HEADER_SIZE);
 	response[0] = 0x01; // Binding success response
 	response[1] = 0x01;
 	response[2] = 0;
-	response[3] = 12;
+	response[3] = 8 + addr_len;
 	response[20] = 0x00; // XOR-MAPPED-ADDRESS
 	response[21] = 0x20;
 	response[22] = 0;
-	response[23] = 8;
+	response[23] = 4 + addr_len;
 	response[24] = 0;
-	response[25] = 0x01; // IPv4
+	response[25] = addr_len == 16 ? 0x02 : 0x01; // IPv6 : IPv4
 	response[26] = port[0] ^ magic_cookie[0];
 	response[27] = port[1] ^ magic_cookie[1];
-	for (i = 0; i < 4; i++) {
-		response[28 + i] = net_from.ip[i] ^ magic_cookie[i];
+	// IPv4 is xored with the magic cookie, IPv6 with the magic cookie and the
+	// transaction id, which follow each other in the header at response[4]
+	for (i = 0; i < addr_len; i++) {
+		response[28 + i] = addr[i] ^ response[4 + i];
 	}
 
-	NET_SendPacket(NS_SERVER, sizeof(response), response, net_from);
+	NET_SendPacket(NS_SERVER, STUN_HEADER_SIZE + 8 + addr_len, response, net_from);
 	return true;
 }
 
@@ -3533,6 +3545,7 @@ void SV_InitLocal (void)
 	Cvar_Register (&sv_getrealip);
 	Cvar_Register (&sv_maxdownloadrate);
 	Cvar_Register (&sv_serverip);
+	Cvar_Register (&sv_serverip6);
 	Cvar_Register (&sv_forcespec_onfull);
 	Cvar_Register (&sv_idlesleep);
 

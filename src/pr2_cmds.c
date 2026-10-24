@@ -1634,6 +1634,7 @@ void PF2_infokey(int e1, char *key, char *valbuff, int sizebuff)
 				|| !strcmp(key, "netname")
 				|| !strcmp(key, "mapname") || !strcmp(key, "modelname")
 				|| !strcmp(key, "version") || !strcmp(key, "servername")
+				|| !strcmp(key, "ipv6") // "ip" and "realip" may be IPv6 addresses
 			   )
 				value = "yes";
 		}

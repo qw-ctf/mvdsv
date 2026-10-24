@@ -1130,20 +1130,17 @@ SV_Resolve
 resolve IP via DNS lookup
 ================
 */
-char *SV_Resolve(char *addr)
+static char *SV_Resolve(netadr_t adr)
 {
-#if defined (__linux__) || defined (_WIN32)
-	unsigned long ip;
-#else
-	in_addr_t ip;
-#endif
+	static char host[256];
+	struct sockaddr_storage ss;
+	socklen_t len = NetadrToSockadr(&adr, &ss);
 
-	struct hostent *hp;
+	if (len && getnameinfo((struct sockaddr *)&ss, len, host, (socklen_t) sizeof(host), NULL, 0, NI_NAMEREQD) == 0)
+		return host;
 
-	ip = inet_addr(addr);
-	if ((hp = gethostbyaddr((const char *)&ip, sizeof(ip), AF_INET)) != NULL)
-		addr = hp->h_name;
-	return addr;
+	// no name, use the address itself.
+	return NET_BaseAdrToString(adr);
 }
 
 /*
@@ -1154,6 +1151,7 @@ SV_Nslookup_f
 void SV_Nslookup_f (void)
 {
 	char		*ip, *name;
+	netadr_t	adr;
 
 	if (Cmd_Argc() != 2)
 	{
@@ -1161,12 +1159,18 @@ void SV_Nslookup_f (void)
 		return;
 	}
 
-	ip = Cmd_Argv(1);
-	name = SV_Resolve(ip);
-	if (ip != name)
+	if (!NET_StringToAdr(Cmd_Argv(1), &adr))
+	{
+		Con_Printf ("Couldn't resolve %s\n", Cmd_Argv(1));
+		return;
+	}
+
+	ip = NET_BaseAdrToString(adr);
+	name = SV_Resolve(adr);
+	if (strcmp(ip, name))
 		Con_Printf ("Name:    %s\nAddress:  %s\n", name, ip);
 	else
-		Con_Printf ("Couldn't resolve %s\n", ip);
+		Con_Printf ("Couldn't resolve %s\n", Cmd_Argv(1));
 
 }
 
@@ -1182,6 +1186,8 @@ void SV_Status_f (void)
 	client_t *cl;
 	float cpu, avg, pak, demo1 = 0.0;
 	char *s;
+	static const char dashes[] = "--------------------------------------------------------------------------------";
+	int addrw = 22, ripw = 15; // column widths, wider for IPv6 addresses
 
 	cpu = (svs.stats.latched_active + svs.stats.latched_idle);
 
@@ -1194,12 +1200,15 @@ void SV_Status_f (void)
 	avg = 1000 * svs.stats.latched_active  / STATFRAMES;
 	pak = (float)svs.stats.latched_packets / STATFRAMES;
 
-	Con_Printf ("net address                 : %s\n"
-				"cpu utilization (overall)   : %3i%%\n"
+	if (net_local_sv_ipadr.type != NA_INVALID || net_local_sv_ip6adr.type == NA_INVALID)
+		Con_Printf ("net address                 : %s\n", NET_AdrToString (net_local_sv_ipadr));
+	if (net_local_sv_ip6adr.type != NA_INVALID)
+		Con_Printf ("net address (ipv6)          : %s\n", NET_AdrToString (net_local_sv_ip6adr));
+
+	Con_Printf ("cpu utilization (overall)   : %3i%%\n"
 				"cpu utilization (recording) : %3i%%\n"
 				"avg response time           : %i ms\n"
 				"packets/frame               : %5.2f (%d)\n",
-				NET_AdrToString (net_local_sv_ipadr),
 				(int)cpu,
 				(int)demo1,
 				(int)avg,
@@ -1208,17 +1217,29 @@ void SV_Status_f (void)
 	switch (sv_redirected)
 	{
 		case RD_NONE:
-			Con_Printf ("name             ping frags   id   address                real ip\n"
-						"---------------- ---- ----- ------ ---------------------- ---------------\n");
+			for (i = 0, cl = svs.clients; i < MAX_CLIENTS; i++, cl++)
+			{
+				if (!cl->state)
+					continue;
+				addrw = max(addrw, (int)strlen(NET_BaseAdrToString(cl->netchan.remote_address)));
+				if (cl->realip.type != NA_INVALID)
+					ripw = max(ripw, (int)strlen(NET_BaseAdrToString(cl->realip)));
+			}
+			addrw = min(addrw, (int)sizeof(dashes) - 1);
+			ripw = min(ripw, (int)sizeof(dashes) - 1);
+
+			Con_Printf ("name             ping frags   id   %-*s real ip\n"
+						"---------------- ---- ----- ------ %.*s %.*s\n",
+						addrw, "address", addrw, dashes, ripw, dashes);
 			for (i = 0, cl = svs.clients; i < MAX_CLIENTS; i++, cl++)
 			{
 				if (!cl->state)
 					continue;
 				s = NET_BaseAdrToString(cl->netchan.remote_address);
-				Con_Printf ("%-16s %4i %5i %6i %-22s ", cl->name, (int)SV_CalcPing(cl),
-						(int)cl->edict->v->frags, cl->userid, (int)sv_use_dns.value ? SV_Resolve(s) : s);
-				if (cl->realip.ip[0])
-					Con_Printf ("%-15s", NET_BaseAdrToString (cl->realip));
+				Con_Printf ("%-16s %4i %5i %6i %-*s ", cl->name, (int)SV_CalcPing(cl),
+						(int)cl->edict->v->frags, cl->userid, addrw, (int)sv_use_dns.value ? SV_Resolve(cl->netchan.remote_address) : s);
+				if (cl->realip.type != NA_INVALID)
+					Con_Printf ("%-*s", ripw, NET_BaseAdrToString (cl->realip));
 				Con_Printf (cl->spectator ? (char *) "(s)" : (char *) "");
 
 				switch (cl->state)
@@ -1253,9 +1274,9 @@ void SV_Status_f (void)
 				s = NET_BaseAdrToString(cl->netchan.remote_address);
 				Con_Printf ("%-18s %4i %5i %6s %s\n%-36s\n", cl->name, (int)SV_CalcPing(cl),
 							(int)cl->edict->v->frags, Q_yelltext((unsigned char*)va("%d", cl->userid)),
-							cl->spectator ? " (s)" : "", (int)sv_use_dns.value ? SV_Resolve(s) : s);
+							cl->spectator ? " (s)" : "", (int)sv_use_dns.value ? SV_Resolve(cl->netchan.remote_address) : s);
 
-				if (cl->realip.ip[0])
+				if (cl->realip.type != NA_INVALID)
 					Con_Printf ("%-36s\n", NET_BaseAdrToString (cl->realip));
 
 				switch (cl->state)
