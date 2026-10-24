@@ -32,7 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define CHAT_ICON_EXPERIMENTAL 1
 
-#define	MAX_MASTERS 8 // max recipients for heartbeat packets
+#define	MAX_MASTERS 16 // max recipients for heartbeat packets, master names may resolve to IPv4 and IPv6 addresses
 
 #define	MAX_SIGNON_BUFFERS 16
 

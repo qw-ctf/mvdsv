@@ -24,7 +24,7 @@ typedef struct {
 } args_t;
 
 typedef struct {
-	unsigned int ip;
+	netadr_t adr; // port is zero, NA_INVALID for a free slot
 	unsigned int count;
 	time_t window_start;
 } ratelimit_t;
@@ -37,7 +37,7 @@ typedef struct {
 
 static DWORD WINAPI SV_BroadcastSend(void *data);
 static DWORD WINAPI SV_BroadcastQueryMasters(void *data);
-static void SV_BroadcastQueryMaster(int sock, netadr_t *naddr, netadr_t *server, int *server_count);
+static void SV_BroadcastQueryMaster(socket_t *sock4, socket_t *sock6, netadr_t *naddr, netadr_t *server, int *server_count);
 static qbool SVC_BroadcastIsRateLimited(netadr_t *from);
 static void SV_BroadcastAddLog(char *msg);
 static void SV_BroadcastAddCache(char *msg);
@@ -123,7 +123,7 @@ void SV_BroadcastUpdateServerList(qbool force_update)
 
 	// If there are no master servers configured, we'll wait the entire
 	// update_interval before trying again.
-	if (!master_adr[0].port)
+	if (master_adr[0].type == NA_INVALID)
 	{
 		Con_Printf("SV_BroadcastUpdateServerList: No master servers configured\n");
 		last_servers_update = realtime;
@@ -162,49 +162,69 @@ void SV_BroadcastUpdateServerList(qbool force_update)
 	}
 }
 
+//
+// Return UDP socket for sending to addresses of given type, it is opened on first use.
+// Sockets are separate from server sockets, these are used from broadcast threads.
+//
+static socket_t SV_BroadcastSocket(netadrtype_t type, socket_t *sock4, socket_t *sock6)
+{
+	struct timeval timeout = {BROADCAST_MASTER_TIMEOUT, 0};
+	socket_t *sock;
+
+	if (type == NA_IP)
+		sock = sock4;
+	else if (type == NA_IPV6)
+		sock = sock6;
+	else
+		return INVALID_SOCKET;
+
+	if (*sock != INVALID_SOCKET)
+		return *sock;
+
+	*sock = socket(type == NA_IPV6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+	if (*sock == INVALID_SOCKET)
+	{
+		Con_Printf("SV_BroadcastSocket: Unable to initialize %s socket\n", type == NA_IPV6 ? "IPv6" : "IPv4");
+		return INVALID_SOCKET;
+	}
+
+	{
+#ifdef _WIN32
+		int timeout_ms = timeout.tv_sec * 1000 + timeout.tv_usec / 1000;
+
+		if (setsockopt(*sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) < 0)
+#else
+		if (setsockopt(*sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
+#endif
+		{
+			Con_Printf("SV_BroadcastSocket: Unable to set timeout on socket\n");
+			closesocket(*sock);
+			*sock = INVALID_SOCKET;
+		}
+	}
+
+	return *sock;
+}
+
 static DWORD WINAPI SV_BroadcastQueryMasters(void *data)
 {
-	static struct timeval timeout = {BROADCAST_MASTER_TIMEOUT, 0};
 	static netadr_t servers[BROADCAST_MAX_SERVERS];
 	extern netadr_t master_adr[MAX_MASTERS];
 	int server_count = 0;
-	int sock = 0;
+	socket_t sock4 = INVALID_SOCKET;
+	socket_t sock6 = INVALID_SOCKET;
 	int i = 0;
-
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock < 0)
-	{
-		Con_Printf("SV_BroadcastQueryMasters: Unable to initialize socket\n");
-		goto out;
-	}
-
-#ifdef _WIN32
-	static int timeout_ms = -1;
-
-	if (timeout_ms == -1)
-	{
-		timeout_ms = timeout.tv_sec * 1000 + timeout.tv_usec / 1000;
-	}
-
-	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) < 0)
-#else
-	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
-#endif
-	{
-		Con_Printf("SV_BroadcastQueryMasters: Unable to set timeout on socket\n");
-		goto cleanup;
-	}
 
 	memset(servers, 0, sizeof(servers));
 
 	for (i = 0; i < MAX_MASTERS; i++)
 	{
-		if (!master_adr[i].port)
+		if (master_adr[i].type == NA_INVALID)
 		{
 			break;
 		}
 
-		SV_BroadcastQueryMaster(sock, &master_adr[i], servers, &server_count);
+		SV_BroadcastQueryMaster(&sock4, &sock6, &master_adr[i], servers, &server_count);
 	}
 
 	if (!Sys_MutexTryLockWithTimeout(&server_list_lock, BROADCAST_SERVER_LIST_LOCK_TIMEOUT))
@@ -218,8 +238,10 @@ static DWORD WINAPI SV_BroadcastQueryMasters(void *data)
 	Con_Printf("Broadcast server list sync complete: %d server(s) available.\n", server_list_count);
 
 cleanup:
-	closesocket(sock);
-out:
+	if (sock4 != INVALID_SOCKET)
+		closesocket(sock4);
+	if (sock6 != INVALID_SOCKET)
+		closesocket(sock6);
 	Sys_MutexLock(&servers_update_lock);
 	update_in_progress = false;
 	last_servers_update = realtime;
@@ -228,7 +250,7 @@ out:
 	return 0;
 }
 
-static void SV_BroadcastQueryMaster(int sock, netadr_t *naddr, netadr_t *servers, int *server_count)
+static void SV_BroadcastQueryMaster(socket_t *sock4, socket_t *sock6, netadr_t *naddr, netadr_t *servers, int *server_count)
 {
 	// Payload to send to the master server, which returns a list of all
 	// registered servers.
@@ -240,6 +262,8 @@ static void SV_BroadcastQueryMaster(int sock, netadr_t *naddr, netadr_t *servers
 	const size_t header_size = sizeof(header);
 	const int addr_size = 6;
 	struct sockaddr_storage addr;
+	socklen_t addrlen;
+	socket_t sock;
 	netadr_t new_addr;
 	qbool exists = false;
 	char buf[1024*64] = {0};
@@ -249,11 +273,16 @@ static void SV_BroadcastQueryMaster(int sock, netadr_t *naddr, netadr_t *servers
 	int ret = 0;
 	int i = 0;
 
-	NetadrToSockadr(naddr, &addr);
+	addrlen = NetadrToSockadr(naddr, &addr);
 	master = NET_AdrToString(*naddr);
 
-	ret = sendto(sock, payload, sizeof(payload), 0, (struct sockaddr *)&addr,
-		sizeof(struct sockaddr_in));
+	if (!addrlen || (sock = SV_BroadcastSocket(naddr->type, sock4, sock6)) == INVALID_SOCKET)
+	{
+		Con_Printf("SV_BroadcastQueryMaster: Unable to query %s\n", master);
+		return;
+	}
+
+	ret = sendto(sock, payload, sizeof(payload), 0, (struct sockaddr *)&addr, addrlen);
 	if (ret < 0)
 	{
 		Con_Printf("SV_BroadcastQueryMaster: Unable to query %s\n", master);
@@ -413,12 +442,15 @@ static DWORD WINAPI SV_BroadcastSend(void *data)
 {
 	args_t *args = (args_t *)data;
 	struct sockaddr_storage addr;
+	socklen_t addrlen;
 	client_t *client = NULL;
 	char out[1024] = {0};
 	int err_count = 0;
 	int written = 0;
 	int players = 0;
-	int sock = 0;
+	socket_t sock4 = INVALID_SOCKET;
+	socket_t sock6 = INVALID_SOCKET;
+	socket_t sock;
 	int len = 0;
 	int ret = 0;
 	int i = 0;
@@ -452,13 +484,6 @@ static DWORD WINAPI SV_BroadcastSend(void *data)
 
 	len += written;
 
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock < 0)
-	{
-		Con_Printf("SV_BroadcastSend: Unable to initialize socket\n");
-		goto out;
-	}
-
 	if (!Sys_MutexTryLockWithTimeout(&server_list_lock, BROADCAST_SERVER_LIST_LOCK_TIMEOUT))
 	{
 		Con_Printf("SV_BroadcastSend: Failed to acquire server_list_lock, aborting\n");
@@ -467,9 +492,10 @@ static DWORD WINAPI SV_BroadcastSend(void *data)
 
 	for (i = 0; i < server_list_count; i++)
 	{
-		NetadrToSockadr(&server_list[i], &addr);
+		addrlen = NetadrToSockadr(&server_list[i], &addr);
+		sock = addrlen ? SV_BroadcastSocket(server_list[i].type, &sock4, &sock6) : INVALID_SOCKET;
 
-		ret = sendto(sock, out, len, 0, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+		ret = (sock == INVALID_SOCKET) ? -1 : sendto(sock, out, len, 0, (struct sockaddr *)&addr, addrlen);
 		if (ret < 0)
 		{
 			Con_Printf("SV_BroadcastSend: Unable to send broadcast to %s\n",
@@ -485,7 +511,10 @@ static DWORD WINAPI SV_BroadcastSend(void *data)
 cancel:
 	Sys_MutexUnlock(&server_list_lock);
 close:
-	closesocket(sock);
+	if (sock4 != INVALID_SOCKET)
+		closesocket(sock4);
+	if (sock6 != INVALID_SOCKET)
+		closesocket(sock6);
 out:
 	Sys_MutexLock(&broadcast_lock);
 	last_broadcast = realtime;
@@ -507,7 +536,7 @@ void SVC_Broadcast(void)
 	qbool spectalk = false;
 	qbool started = false;
 	qbool valid = false;
-	char addrport[22] = {0};
+	char addrport[96] = {0};
 	char log[1024] = {0};
 	char out[1024] = {0};
 	char *displayaddr = NULL;
@@ -536,6 +565,7 @@ void SVC_Broadcast(void)
 
 	// If enabled, ensure that the sender's address exists in the list of
 	// addresses received from the master server.
+	// NOTE: master server lists are IPv4 only, so broadcasts from IPv6 senders are rejected.
 	if (sv_broadcast_sender_validation_enabled.value)
 	{
 		valid = false;
@@ -584,7 +614,10 @@ void SVC_Broadcast(void)
 	}
 	else if (strlen(port) > 0)
 	{
-		snprintf(addrport, sizeof(addrport), "%s:%s", NET_BaseAdrToString(net_from), port);
+		qbool v6 = (net_from.type == NA_IPV6);
+
+		snprintf(addrport, sizeof(addrport), "%s%s%s:%s",
+			v6 ? "[" : "", NET_BaseAdrToString(net_from), v6 ? "]" : "", port);
 		displayaddr = addrport;
 	}
 	else
@@ -636,22 +669,18 @@ void SVC_Broadcast(void)
 
 qbool SVC_BroadcastIsRateLimited(netadr_t *from)
 {
-	struct sockaddr_storage addr;
-	struct sockaddr_in *addr_in;
 	time_t now = time(NULL);
 	char *ip_str = NULL;
-	unsigned int ip = 0;
+	netadr_t adr = *from;
 	int next = -1;
 	int i = 0;
 
-	NetadrToSockadr(from, &addr);
-	addr_in = (struct sockaddr_in *)&addr;
-	ip = ntohl(addr_in->sin_addr.s_addr);
-	ip_str = NET_BaseAdrToString(*from);
+	adr.port = 0;
+	ip_str = NET_BaseAdrToString(adr);
 
 	for (i = 0; i < BROADCAST_RATELIMIT_MAX_ENTRIES; i++)
 	{
-		if (ratelimit[i].ip == ip)
+		if (NET_CompareBaseAdr(ratelimit[i].adr, adr))
 		{
 			// Enough time has passed, let's reset the window and
 			// counter for the given address.
@@ -679,17 +708,15 @@ qbool SVC_BroadcastIsRateLimited(netadr_t *from)
 		}
 
 		// Check whether or not we can evict the entry for this IP.
-		if (ratelimit[i].ip != 0 &&
+		if (ratelimit[i].adr.type != NA_INVALID &&
 			now - ratelimit[i].window_start >= BROADCAST_RATELIMIT_WINDOW_SECONDS)
 		{
-			ratelimit[i].ip = 0;
-			ratelimit[i].count = 0;
-			ratelimit[i].window_start = 0;
+			memset(&ratelimit[i], 0, sizeof(ratelimit[i]));
 		}
 
 		// If next isn't set and the spot is available, we'll use it for
 		// the next ratelimit entry.
-		if (next == -1 && ratelimit[i].ip == 0)
+		if (next == -1 && ratelimit[i].adr.type == NA_INVALID)
 		{
 			next = i;
 		}
@@ -704,7 +731,7 @@ qbool SVC_BroadcastIsRateLimited(netadr_t *from)
 		return true;
 	}
 
-	ratelimit[next].ip = ip;
+	ratelimit[next].adr = adr;
 	ratelimit[next].count = 1;
 	ratelimit[next].window_start = now;
 	return false;
