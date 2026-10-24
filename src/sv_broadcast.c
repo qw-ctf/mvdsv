@@ -293,6 +293,9 @@ static void SV_BroadcastQueryMaster(int sock, netadr_t *naddr, netadr_t *servers
 			break;
 		}
 
+		// master server lists are IPv4 only.
+		memset(&new_addr, 0, sizeof(new_addr));
+		new_addr.type = NA_IP;
 		memcpy(&new_addr.ip, &buf[offset], 4);
 		memcpy(&new_addr.port, &buf[offset + 4], 2);
 		exists = false;
@@ -331,8 +334,7 @@ static void SV_BroadcastQueryMaster(int sock, netadr_t *naddr, netadr_t *servers
 			continue;
 		}
 
-		memcpy(servers[*server_count].ip, &new_addr.ip, 4);
-		servers[*server_count].port = new_addr.port;
+		servers[*server_count] = new_addr;
 		(*server_count)++;
 	}
 }

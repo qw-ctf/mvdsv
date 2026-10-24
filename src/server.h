@@ -674,7 +674,7 @@ typedef struct
 // TCPCONNECT -->
 typedef struct svtcpstream_s
 {
-	int                     socketnum;                         // socket
+	socket_t                socketnum;                         // socket
 	qbool                   waitingforprotocolconfirmation;    // wait for "qizmo\n", first 6 bytes before confirming that is tcpconnection
 	int                     inlen;                             // how much bytes we have in inbuffer
 	char                    inbuffer[1500];                    // recv buffer
@@ -693,10 +693,12 @@ typedef struct
 									// used to check late spawns
 	int				lastuserid;		// userid of last spawned client
 
-	socket_t		socketip;		// main server UDP socket.
+	socket_t		socketip;		// main server UDP socket, IPv4. INVALID_SOCKET if IPv4 is not enabled.
+	socket_t		socketip6;		// main server UDP socket, IPv6. INVALID_SOCKET if IPv6 is not enabled.
 
 // TCPCONNECT -->
-	socket_t		sockettcp;		// server TCP socket, used for QTV/TCPCONNECT.
+	socket_t		sockettcp;		// server TCP listen socket, IPv4, used for QTV/TCPCONNECT.
+	socket_t		sockettcp6;		// server TCP listen socket, IPv6, used for QTV/TCPCONNECT.
 	svtcpstream_t *	tcpstreams;
 // <-- TCPCONNECT
 

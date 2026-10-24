@@ -133,9 +133,13 @@ typedef int socket_t;
 #define SOCKET_ERROR -1
 #endif
 
+#ifndef IPV6_V6ONLY
+#define IPV6_V6ONLY 27 // value from the Winsock ABI, POSIX headers always define it
+#endif
+
 #define PORT_ANY ((unsigned short int)0xFFFF)
 
-typedef enum {NA_INVALID, NA_LOOPBACK, NA_IP} netadrtype_t;
+typedef enum {NA_INVALID, NA_LOOPBACK, NA_IP, NA_IPV6} netadrtype_t;
 
 typedef enum {NS_CLIENT, NS_SERVER} netsrc_t;
 
@@ -143,33 +147,48 @@ typedef struct
 {
 	netadrtype_t	type;
 
-	byte ip[4];
+	byte			ip[4];		// valid when type == NA_IP
+	byte			ip6[16];	// valid when type == NA_IPV6
+	unsigned int	scope_id;	// NA_IPV6 only: sin6_scope_id of link-local addresses, otherwise 0
 
-	unsigned short	port;
+	unsigned short	port;		// network byte order
 } netadr_t;
 
-extern	netadr_t	net_local_sv_ipadr;
-extern	netadr_t	net_local_sv_tcpipadr;
+extern	netadr_t	net_local_sv_ipadr;		// IPv4 server address, NA_INVALID if IPv4 is not enabled
+extern	netadr_t	net_local_sv_ip6adr;	// IPv6 server address, NA_INVALID if IPv6 is not enabled
 extern	netadr_t	net_local_cl_ipadr;
 
 extern	netadr_t	net_from; // address of who sent the packet
 extern	sizebuf_t	net_message;
 
-// convert netadrt_t to sockaddr_storage.
-void	NetadrToSockadr (const netadr_t *a, struct sockaddr_storage *s);
-// convert sockaddr_storage to netadrt_t.
-void	SockadrToNetadr (const struct sockaddr_storage *s, netadr_t *a);
+// convert netadr_t to sockaddr_storage, returns the length of the sockaddr, or 0 for non IP address types.
+socklen_t	NetadrToSockadr (const netadr_t *a, struct sockaddr_storage *s);
+// convert sockaddr_storage to netadr_t, returns false (and sets NA_INVALID) for unsupported address families.
+// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are converted to NA_IP.
+qbool	SockadrToNetadr (const struct sockaddr_storage *s, netadr_t *a);
 
-// compare netart_t.
+// compare netadr_t. Addresses of different types never match, NA_INVALID addresses never match anything.
 qbool	NET_CompareAdr (const netadr_t a, const netadr_t b);
-// compare netart_t, ignore port.
+// compare netadr_t, ignore port.
 qbool	NET_CompareBaseAdr (const netadr_t a, const netadr_t b);
-// print netadr_t as string, xxx.xxx.xxx.xxx:xxxxx notation.
+// print netadr_t as string, a.b.c.d:port or [v6]:port notation.
 char	*NET_AdrToString (const netadr_t a);
-// print netadr_t as string, port skipped, xxx.xxx.xxx.xxx notation.
+// print netadr_t as string, port skipped, a.b.c.d or v6 (without brackets) notation.
 char	*NET_BaseAdrToString (const netadr_t a);
-// convert/resolve IP/DNS to netadr_t.
+// convert/resolve IP/DNS to netadr_t. Accepts host, host:port, [v6], [v6]:port and bare v6 (no port).
+// When a name resolves to both families, the family of an open server socket is preferred, IPv4 first.
 qbool	NET_StringToAdr (const char *s, netadr_t *a);
+// same syntax as NET_StringToAdr, returns every address the name resolves to (both families, no duplicates).
+int		NET_StringToAdrList (const char *s, netadr_t *out, int maxout);
+// same syntax as NET_StringToAdr, but only numeric addresses are accepted, never does DNS lookups.
+qbool	NET_StringToAdrNumeric (const char *s, netadr_t *a);
+
+// 127.0.0.0/8 and ::1.
+qbool	NET_IsLoopbackAdr (const netadr_t a);
+// IPv4: 10/8, 172.16/12, 192.168/16 and multicast. IPv6: link-local, unique local and multicast.
+qbool	NET_IsPrivateAdr (const netadr_t a);
+// raw address bytes of the active family (4 or 16), NULL and *len 0 for non IP addresses.
+const byte	*NET_AdrBytes (const netadr_t *a, int *len);
 
 void	NET_Init (void);
 void	NET_Shutdown (void);
@@ -180,7 +199,7 @@ void	NET_CloseServer (void);
 qbool	NET_GetPacket (netsrc_t sock);
 void	NET_SendPacket (netsrc_t sock, int length, void *data, netadr_t to);
 
-void	NET_GetLocalAddress (int socket, netadr_t *out);
+void	NET_GetLocalAddress (socket_t sock, netadr_t *out);
 
 void	NET_ClearLoopback (void);
 qbool	NET_Sleep(int msec, qbool stdinissocket);
@@ -188,20 +207,34 @@ qbool	NET_Sleep(int msec, qbool stdinissocket);
 // GETER: return port of UDP server socket.
 int		NET_UDPSVPort (void);
 
-// GETER: return client/server UDP/TCP socket.
-socket_t	NET_GetSocket(netsrc_t netsrc, qbool tcp);
+// number of server TCP listen sockets, index 0 is IPv4, index 1 is IPv6.
+#define NET_TCP_LISTENERS 2
+// GETER: return server TCP listen socket by index, INVALID_SOCKET if it is not open.
+socket_t	NET_GetTCPListenSocket (int index);
+// GETER: true if any server TCP listen socket is open.
+qbool	NET_HasTCPListenSocket (void);
+// GETER: true if an address family with a server UDP socket has no server TCP listen socket.
+qbool	NET_TCPListenSocketMissing (void);
 
-// open server TCP socket.
+// open server TCP sockets, one per enabled address family.
 void	NET_InitServer_TCP(unsigned short int port);
+// open server TCP sockets which are not open yet, keeping the open ones.
+void	NET_OpenServer_TCP(unsigned short int port);
+
+#ifndef CLIENTONLY
+// allocate server side TCP connection, may link it in, if requested.
+struct svtcpstream_s	*sv_tcp_connection_new (socket_t sock, netadr_t from, char *buf, int buf_len, qbool link);
+int		sv_tcp_connection_count (void);
+#endif
 
 // UTILITY: set KEEPALIVE option on TCP socket (useful for faster timeout detection).
 qbool 	TCP_Set_KEEPALIVE(socket_t sock);
 // UTILITY: open TCP socket for remove address (useful for client connection).
 socket_t	TCP_OpenStream (netadr_t remoteaddr);
-// UTILITY: open TCP listen socket (useful for server).
-socket_t	TCP_OpenListenSocket (unsigned short int port);
-// UTILITY: open UDP listen socket (useful for server).
-socket_t	UDP_OpenSocket (unsigned short int port);
+// UTILITY: open TCP listen socket (useful for server). family is AF_INET or AF_INET6, bindaddr NULL means any address.
+socket_t	TCP_OpenListenSocket (int family, const char *bindaddr, unsigned short int port);
+// UTILITY: open UDP listen socket (useful for server). family is AF_INET or AF_INET6, bindaddr NULL means any address.
+socket_t	UDP_OpenSocket (int family, const char *bindaddr, unsigned short int port);
 //============================================================================
 
 //

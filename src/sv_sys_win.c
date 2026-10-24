@@ -433,7 +433,7 @@ void Sys_Error (const char *error, ...)
 	}
 
 // FIXME: hack - checking SV_Shutdown with svs.socketip set in -1 NET_Shutdown
-	if (svs.socketip != -1)
+	if (svs.socketip != INVALID_SOCKET || svs.socketip6 != INVALID_SOCKET)
 		SV_Shutdown (va("ERROR: %s\n", text));
 
 	if ((int)sys_restart_on_error.value)
