@@ -4,7 +4,7 @@
 .\" First parameter, NAME, should be all caps
 .\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
 .\" other parameters are allowed: see man(7), man(1)
-.TH MVDSV 6 "May 28 2026"
+.TH MVDSV 6 "October 24 2026"
 .\" Please adjust this date whenever revising the manpage.
 .\"
 .\" Some roff macros, for reference:
@@ -35,6 +35,9 @@ mvdsv \- QuakeWorld-compatible dedicated server
 [-heapsize \fISIZE_IN_KB\fP]
 [-mem \fISIZE_IN_MB\fP]
 [-ip \fIIPV4_ADDRESS\fP]
+[-ip6 \fIIPV6_ADDRESS\fP]
+[-noipv4]
+[-noipv6]
 [-port \fIUDP_PORT\fP]
 [-clientport \fIUDP_PORT\fP]
 .SH DESCRIPTION
@@ -87,12 +90,24 @@ This directory is relative to the base directory.
 Identical to "-game". However, when both are set, "-game" takes precedence.
 .TP
 .B -ip \fIIPV4_ADDRESS\fP
-Bind to the network interface with this IPv4 address, instead of all interfaces.
-Currently only IPv4 addresses are supported. IPv6 addresses will silently fail.
+Bind the IPv4 sockets to this address, instead of all IPv4 addresses.
+When -ip is given without -ip6, IPv6 is not enabled.
+.TP
+.B -ip6 \fIIPV6_ADDRESS\fP
+Bind the IPv6 sockets to this address, instead of all IPv6 addresses. The address
+may be put in brackets. Link-local addresses need a scope, e.g. fe80::1%eth0.
+When -ip6 is given without -ip, IPv4 is not enabled.
+.TP
+.B -noipv4
+Do not open IPv4 sockets.
+.TP
+.B -noipv6
+Do not open IPv6 sockets.
 .TP
 .B -port \fIUDP_PORT\fP
-Listen on UDP port number \fIPORT\fP for QuakeWorld clients to connect. Defaults
-to 27500.
+Listen on UDP port number \fIPORT\fP for QuakeWorld clients to connect, on IPv4
+and IPv6. Defaults to 27500. The TCP port for QTV and qizmo connections is set
+with the qtv_streamport variable, it is opened for the same address families.
 .TP
 .B -clientport \fIUDP_PORT\fP
 UDP port used when mvdsv connects outbound as a client (e.g. QTV/spectating
@@ -168,6 +183,29 @@ Defaults to 32 MiB.
 .TP
 .B +exec \fIMYSERVER.CFG\fP
 execute all server commands configured in the file \fIMYSERVER.CFG\fP.
+
+.SH NETWORKING
+By default the server listens on all IPv4 and all IPv6 addresses, with separate
+sockets for each address family. If IPv6 is not available on the host, the
+server continues with IPv4 only, unless IPv6 was asked for with -ip6 or -noipv4.
+If an address family that was asked for can not be opened, the server exits.
+.PP
+IPv6 addresses are shown as [address]:port, or without brackets when there is
+no port. The variable sv_local_addr6 holds the IPv6 address of the server.
+sv_serverip6 overrides it in the real IP check of clients connected over IPv6,
+like sv_serverip does for IPv4, e.g. "[2001:db8::1]:27500".
+.PP
+The addip, removeip and vip_addip commands take IPv4 addresses in dotted
+notation, where zero or missing octets match any value ("addip 192.168"),
+networks in CIDR notation ("addip 192.168.1.0/24", "addip 2001:db8::/32") and
+single IPv6 addresses ("addip 2001:db8::1"). IPv4 filters only match IPv4
+addresses and IPv6 filters only match IPv6 addresses. IP accounts made with
+acc_create match a single address, or a network when written in CIDR notation.
+.PP
+setmaster sends heartbeats to every IPv4 and IPv6 address a master server name
+resolves to. Master server lists only contain IPv4 addresses, so broadcasts
+from IPv6 servers are rejected when sv_broadcast_sender_validation_enabled is
+set.
 
 .SH AUTHOR
 This manual page was written by Lee Garrett <debian@rocketjump.eu>,
