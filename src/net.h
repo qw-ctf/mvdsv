@@ -152,6 +152,10 @@ typedef struct
 	unsigned int	scope_id;	// NA_IPV6 only: sin6_scope_id of link-local addresses, otherwise 0
 
 	unsigned short	port;		// network byte order
+
+	// A client on a WebRTC data channel (sv_webrtc.c): the type, address and
+	// port are its real ones, but packets to it go through its channel, never UDP.
+	qbool			webrtc;
 } netadr_t;
 
 extern	netadr_t	net_local_sv_ipadr;		// IPv4 server address, NA_INVALID if IPv4 is not enabled
@@ -161,13 +165,14 @@ extern	netadr_t	net_local_cl_ipadr;
 extern	netadr_t	net_from; // address of who sent the packet
 extern	sizebuf_t	net_message;
 
-// convert netadr_t to sockaddr_storage, returns the length of the sockaddr, or 0 for non IP address types.
+// convert netadr_t to sockaddr_storage, returns the length of the sockaddr, or 0 for non IP address types and WebRTC addresses.
 socklen_t	NetadrToSockadr (const netadr_t *a, struct sockaddr_storage *s);
 // convert sockaddr_storage to netadr_t, returns false (and sets NA_INVALID) for unsupported address families.
 // IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are converted to NA_IP.
 qbool	SockadrToNetadr (const struct sockaddr_storage *s, netadr_t *a);
 
-// compare netadr_t. Addresses of different types never match, NA_INVALID addresses never match anything.
+// compare netadr_t. Addresses of different types never match, NA_INVALID addresses never match anything,
+// and a WebRTC address never matches a UDP one.
 qbool	NET_CompareAdr (const netadr_t a, const netadr_t b);
 // compare netadr_t, ignore port.
 qbool	NET_CompareBaseAdr (const netadr_t a, const netadr_t b);

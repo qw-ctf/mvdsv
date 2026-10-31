@@ -276,6 +276,9 @@ socklen_t NetadrToSockadr (const netadr_t *a, struct sockaddr_storage *s)
 {
 	memset (s, 0, sizeof(*s));
 
+	if (a->webrtc)
+		return 0; // its packets go through its data channel
+
 	switch (a->type)
 	{
 		case NA_IP:
@@ -433,7 +436,8 @@ qbool NET_CompareBaseAdr (const netadr_t a, const netadr_t b)
 		return true;
 #endif
 
-	if (a.type != b.type)
+	// a WebRTC client and a UDP one from the same address are different clients
+	if (a.type != b.type || a.webrtc != b.webrtc)
 		return false;
 
 	switch (a.type)
