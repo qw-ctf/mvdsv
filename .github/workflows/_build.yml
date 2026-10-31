@@ -25,23 +25,23 @@ jobs:
           - target: linux-i686
             os: linux
             arch: i386
-            cross-compiler-package: gcc-i686-linux-gnu
+            cross-compiler-package: gcc-i686-linux-gnu g++-i686-linux-gnu
           - target: linux-armhf
             os: linux
             arch: armhf
-            cross-compiler-package: gcc-arm-linux-gnueabihf
+            cross-compiler-package: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
           - target: linux-aarch64
             os: linux
             arch: arm64
-            cross-compiler-package: gcc-aarch64-linux-gnu
+            cross-compiler-package: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           - target: windows-x64
             os: windows
             arch: x64
-            cross-compiler-package: gcc-mingw-w64-x86-64
+            cross-compiler-package: gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
           - target: windows-x86
             os: windows
             arch: x86
-            cross-compiler-package: gcc-mingw-w64-i686
+            cross-compiler-package: gcc-mingw-w64-i686 g++-mingw-w64-i686
     steps:
       - name: Checkout
         uses: actions/checkout@v6

@@ -4,7 +4,7 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 
 # which compilers to use for C and C++
 set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc)
-#set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++)
+set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++)
 
 # adjust the default behaviour of the FIND_XXX() commands:
 # search headers and libraries in the target environment, search
