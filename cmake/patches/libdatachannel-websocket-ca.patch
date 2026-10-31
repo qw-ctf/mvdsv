@@ -1,0 +1,41 @@
+diff --git a/include/rtc/rtc.h b/include/rtc/rtc.h
+index d3f3e4db..5a13b694 100644
+--- a/include/rtc/rtc.h
++++ b/include/rtc/rtc.h
+@@ -527,6 +527,8 @@ typedef struct {
+ 	int pingIntervalMs;         // in milliseconds, 0 means default, < 0 means disabled
+ 	int maxOutstandingPings;    // 0 means default, < 0 means disabled
+ 	int maxMessageSize;         // <= 0 means default
++	const char *caCertificatePemFile; // PEM file or content of the CAs to verify with,
++	                                  // NULL for the system's (none on Windows or with Mbed TLS)
+ } rtcWsConfiguration;
+ 
+ RTC_C_EXPORT int rtcCreateWebSocket(const char *url); // returns ws id
+diff --git a/src/capi.cpp b/src/capi.cpp
+index f3385b47..1feb4d84 100644
+--- a/src/capi.cpp
++++ b/src/capi.cpp
+@@ -1827,6 +1827,9 @@ int rtcCreateWebSocketEx(const char *url, const rtcWsConfiguration *config) {
+ 		if (config->maxMessageSize > 0)
+ 			c.maxMessageSize = size_t(config->maxMessageSize);
+ 
++		if (config->caCertificatePemFile)
++			c.caCertificatePemFile = string(config->caCertificatePemFile);
++
+ 		auto webSocket = std::make_shared<WebSocket>(std::move(c));
+ 		webSocket->open(url);
+ 		return emplaceWebSocket(webSocket);
+diff --git a/src/impl/websocket.cpp b/src/impl/websocket.cpp
+index 9455fa42..72ce7ed8 100644
+--- a/src/impl/websocket.cpp
++++ b/src/impl/websocket.cpp
+@@ -378,7 +378,8 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
+ 		bool verify = mHostname.has_value() && !config.disableTlsVerification;
+ 
+ #ifdef _WIN32
+-		if (std::exchange(verify, false)) {
++		// no system root CAs to verify with on Windows, but given ones will do
++		if (!config.caCertificatePemFile && std::exchange(verify, false)) {
+ 			PLOG_WARNING << "TLS certificate verification with root CA is not supported on Windows";
+ 		}
+ #endif

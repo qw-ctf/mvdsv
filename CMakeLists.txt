@@ -123,6 +123,19 @@ endif()
 
 ######################################################################################################
 
+# WebRTC transport: libdatachannel on Mbed TLS, fetched and built with the server
+# (cmake/libdatachannel.cmake, cmake/mbedtls.cmake).
+option(WEBRTC "Build the WebRTC transport (fetches and builds libdatachannel and Mbed TLS)" ON)
+if(WEBRTC)
+	include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/libdatachannel.cmake) # first: building it needs more of Mbed TLS
+	include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/mbedtls.cmake)
+	message(STATUS "WebRTC: enabled")
+else()
+	message(STATUS "WebRTC: disabled")
+endif()
+
+######################################################################################################
+
 # Set base compiler flags
 set(CFLAGS -Wall)
 if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
@@ -200,6 +213,16 @@ endif()
 
 if(PCRE_FOUND)
 	target_link_libraries(${PROJECT_NAME} ${PCRE_LIBRARIES})
+endif()
+
+if(WEBRTC)
+	target_compile_definitions(${PROJECT_NAME} PRIVATE WEBRTC)
+	target_link_libraries(${PROJECT_NAME} LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
+	if(WIN32 AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+		# The static libdatachannel brings C++: keep the .exe free of MinGW's C++
+		# and thread runtime DLLs.
+		target_link_options(${PROJECT_NAME} PRIVATE -static)
+	endif()
 endif()
 
 
