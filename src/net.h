@@ -208,6 +208,12 @@ void	NET_GetLocalAddress (socket_t sock, netadr_t *out);
 
 void	NET_ClearLoopback (void);
 qbool	NET_Sleep(int msec, qbool stdinissocket);
+#ifdef WEBRTC
+// A loopback socket NET_Sleep also waits on, so other threads can end its wait.
+qbool	NET_WakeInit (void);
+void	NET_WakeShutdown (void);
+void	NET_Wake (void);	// from any thread
+#endif
 
 // GETER: return port of UDP server socket.
 int		NET_UDPSVPort (void);

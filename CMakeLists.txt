@@ -130,6 +130,7 @@ if(WEBRTC)
 	include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/libdatachannel.cmake) # first: building it needs more of Mbed TLS
 	include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/mbedtls.cmake)
 	list(APPEND SRC_COMMON
+		"${DIR_SRC}/sv_webrtc.c"
 		"${DIR_SRC}/sv_webrtc_cert.c"
 	)
 	message(STATUS "WebRTC: enabled")

@@ -22,6 +22,8 @@
 // one start to the next. When neither file exists a new ECDSA P-256 pair is
 // generated and written. Files that exist are never overwritten: a damaged or
 // mismatched pair is reported and WebRTC stays off until it is fixed.
+//
+// It also reads the CA certificates the broker's certificate is checked with.
 
 #ifdef WEBRTC
 
@@ -47,14 +49,16 @@
 #endif
 
 #define CERT_MAX_FILE		(256 * 1024)	// far above any PEM chain
+#define CERT_MAX_CAFILE		(16 * 1024 * 1024)	// far above any CA bundle
 #define CERT_PEM_SIZE		4096			// one P-256 certificate or key as PEM
 #define CERT_VALID_YEARS	10				// FTE's span
 #define CERT_SUBJECT		"CN=mvdsv"
+#define PEM_BEGIN_CERT		"-----BEGIN CERTIFICATE-----"
 #define PEM_END_CERT		"-----END CERTIFICATE-----"
 
 typedef enum { CERTFILE_OK, CERTFILE_MISSING, CERTFILE_BAD } certfile_t;
 
-static certfile_t Cert_ReadFile (const char *name, char **out)
+static certfile_t Cert_ReadFile (const char *name, unsigned long max, char **out)
 {
 	vfsfile_t *f;
 	vfserrno_t err;
@@ -67,7 +71,7 @@ static certfile_t Cert_ReadFile (const char *name, char **out)
 		return errno == ENOENT ? CERTFILE_MISSING : CERTFILE_BAD;
 
 	len = VFS_GETLEN(f);
-	if (len == 0 || len > CERT_MAX_FILE)
+	if (len == 0 || len > max)
 	{
 		VFS_CLOSE(f);
 		return CERTFILE_BAD;
@@ -258,8 +262,8 @@ qbool SV_WebRTC_LoadCertificate (const char *certfile, const char *keyfile,
 		goto done;
 	}
 
-	certstate = Cert_ReadFile(certfile, &cert);
-	keystate = Cert_ReadFile(keyfile, &key);
+	certstate = Cert_ReadFile(certfile, CERT_MAX_FILE, &cert);
+	keystate = Cert_ReadFile(keyfile, CERT_MAX_FILE, &key);
 
 	if (certstate == CERTFILE_MISSING && keystate == CERTFILE_MISSING)
 	{
@@ -328,6 +332,47 @@ done:
 	mbedtls_ctr_drbg_free(&drbg);
 	mbedtls_entropy_free(&entropy);
 	return *cert_pem != NULL;
+}
+
+char *SV_WebRTC_LoadCAs (const char *cafile, char *about, size_t about_size)
+{
+	mbedtls_x509_crt chain;
+	const mbedtls_x509_crt *crt;
+	const char *source = cafile;
+	char *text = NULL;
+	int ret, count = 0;
+
+	if (cafile[0])
+	{
+		if (Cert_ReadFile(cafile, CERT_MAX_CAFILE, &text) != CERTFILE_OK)
+		{
+			snprintf(about, about_size, "%s could not be read", cafile);
+			return NULL;
+		}
+	}
+	else if (!(text = Sys_TrustedCertificates(&source)))
+	{
+		snprintf(about, about_size, "found no CA certificates %s%s", source ? "in " : "in the usual places", source ? source : "");
+		return NULL;
+	}
+
+	// as libdatachannel takes them: PEM text (else it takes the text for a
+	// file name), of which Mbed TLS skips what it cannot parse
+	mbedtls_x509_crt_init(&chain);
+	ret = strstr(text, PEM_BEGIN_CERT) ? mbedtls_x509_crt_parse(&chain, (const unsigned char *) text, strlen(text) + 1)
+		: MBEDTLS_ERR_X509_INVALID_FORMAT;
+	for (crt = &chain; ret >= 0 && crt && crt->raw.len; crt = crt->next)
+		count++;
+	mbedtls_x509_crt_free(&chain);
+
+	if (!count)
+	{
+		snprintf(about, about_size, "found no CA certificates in %s", source);
+		Q_free(text);
+		return NULL;
+	}
+	snprintf(about, about_size, "%d CA certificate%s from %s", count, count == 1 ? "" : "s", source);
+	return text;
 }
 
 #endif // WEBRTC

@@ -959,6 +959,8 @@ qbool SV_FilterEqual (const ipfilter_t *a, const ipfilter_t *b);
 // print filter in a form StringToFilter() parses back to the same filter.
 const char *SV_FilterToString (const ipfilter_t *f, char *buf, size_t size);
 
+// true when packets from adr are to be dropped (banned), SV_FilterPacket checks net_from.
+qbool SV_FilterAddress (const netadr_t *adr);
 qbool SV_FilterPacket (void);
 void SV_SendBan (void);
 qbool GameStarted(void);

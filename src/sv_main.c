@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifndef CLIENTONLY
 #include "qwsvdef.h"
+#include "sv_webrtc.h"
 
 #ifdef SERVERONLY
 
@@ -256,6 +257,10 @@ void SV_Shutdown (char *finalmsg)
 	}
 	if (sv.mvdrecording)
 		SV_MVDStop_f();
+
+#ifdef WEBRTC
+	SV_WebRTC_Shutdown ();
+#endif
 
 #ifndef SERVER_ONLY
 	NET_CloseServer ();
@@ -1422,6 +1427,15 @@ static void SVC_DirectConnect (void)
 	Netchan_OutOfBandPrint (NS_SERVER, adr, "%c", S2C_CONNECTION);
 
 	Netchan_Setup (NS_SERVER, &newcl->netchan, adr, qport, Q_atoi(Info_Get(&newcl->_userinfo_ctx_, "mtu")));
+
+	// A WebRTC client's address is its real one, and it could not send the
+	// UDP packet the realip check asks for. As a real ip it is an address
+	// like any other, so penalties follow the client from one to the other.
+	if (adr.webrtc)
+	{
+		newcl->realip = adr;
+		newcl->realip.webrtc = false;
+	}
 
 	newcl->state = cs_preconnected;
 
@@ -2656,18 +2670,30 @@ void SV_SendBan (void)
 
 /*
 =================
+SV_FilterAddress
+
+True when packets from adr are to be dropped (banned).
+=================
+*/
+qbool SV_FilterAddress (const netadr_t *adr)
+{
+	int		i;
+
+	for (i=0 ; i<numipfilters ; i++)
+		if ( ipfilters[i].type == ipft_ban && SV_FilterMatch (&ipfilters[i], adr) )
+			return (int)filterban.value;
+
+	return !(int)filterban.value;
+}
+
+/*
+=================
 SV_FilterPacket
 =================
 */
 qbool SV_FilterPacket (void)
 {
-	int		i;
-
-	for (i=0 ; i<numipfilters ; i++)
-		if ( ipfilters[i].type == ipft_ban && SV_FilterMatch (&ipfilters[i], &net_from) )
-			return (int)filterban.value;
-
-	return !(int)filterban.value;
+	return SV_FilterAddress (&net_from);
 }
 
 // { server internal BAN support
@@ -3377,6 +3403,10 @@ static void SV_ReadPackets (void)
 				continue;
 			if (cl->netchan.remote_address.port != net_from.port)
 			{
+				// only NAT routers change ports, of UDP addresses; another port
+				// on WebRTC is another client
+				if (net_from.webrtc)
+					continue;
 				Con_DPrintf ("SV_ReadPackets: fixing up a translated port\n");
 				cl->netchan.remote_address.port = net_from.port;
 			}
@@ -3682,6 +3712,10 @@ void SV_Frame (double time1)
 
 	SV_MVDStream_Poll();
 
+#ifdef WEBRTC
+	SV_WebRTC_Frame ();
+#endif
+
 #ifdef SERVERONLY
 	// check for commands typed to the host
 	SV_GetConsoleCommands ();
@@ -3799,6 +3833,9 @@ void SV_InitLocal (void)
 	SV_InitOperatorCommands	();
 	SV_UserInit ();
 	SV_BroadcastInit ();
+#ifdef WEBRTC
+	SV_WebRTC_Init ();
+#endif
 
 	Cvar_Register (&sv_getrealip);
 	Cvar_Register (&sv_maxdownloadrate);

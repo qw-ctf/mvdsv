@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef SERVERONLY
 #include "qwsvdef.h"
+#include "sv_webrtc.h"
 #else
 #include "quakedef.h"
 #include "server.h"
@@ -1149,6 +1150,11 @@ qbool NET_GetPacketEx (netsrc_t netsrc, qbool delay)
 #endif
 // <--TCPCONNECT
 
+#ifdef WEBRTC
+	if (netsrc == NS_SERVER && SV_WebRTC_GetPacket(&net_from, &net_message))
+		return true;
+#endif
+
 	return false;
 }
 
@@ -1311,6 +1317,16 @@ void NET_SendPacketEx (netsrc_t netsrc, int length, void *data, netadr_t to, qbo
 		return;
 #endif
 // <--TCPCONNECT
+
+#ifdef WEBRTC
+	if (to.webrtc)
+	{
+		// its data channel; as UDP, never mind if it is gone
+		if (netsrc == NS_SERVER)
+			SV_WebRTC_SendPacket(length, data, to);
+		return;
+	}
+#endif
 
 	NET_SendUDPPacket(netsrc, length, data, to);
 }
@@ -1550,6 +1566,67 @@ socket_t UDP_OpenSocket (int family, const char *bindaddr, unsigned short int po
 	return NET_OpenBoundSocket (family, SOCK_DGRAM, bindaddr, port, "UDP_OpenSocket");
 }
 
+#ifdef WEBRTC
+// WebRTC packets arrive on libdatachannel's threads; a byte sent to this
+// loopback socket, which NET_Sleep waits on too, has the main loop read them
+// at once rather than at the end of its select() timeout.
+static socket_t net_wakesocket = INVALID_SOCKET;
+
+qbool NET_WakeInit (void)
+{
+	struct sockaddr_in address;
+	socklen_t length = sizeof(address);
+	socket_t s;
+#ifdef _WIN32
+	unsigned long _true = true;
+#endif
+
+	if (net_wakesocket != INVALID_SOCKET)
+		return true;
+	if ((s = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) == INVALID_SOCKET)
+		return false;
+
+	memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address.sin_port = 0;
+
+	if (
+#ifdef _WIN32
+		ioctlsocket(s, FIONBIO, &_true) == -1
+#else
+		fcntl(s, F_SETFL, O_NONBLOCK) == -1
+#endif
+		|| bind(s, (struct sockaddr *) &address, sizeof(address)) == -1
+		|| getsockname(s, (struct sockaddr *) &address, &length) == -1
+		|| connect(s, (struct sockaddr *) &address, sizeof(address)) == -1) // to itself only
+	{
+		closesocket(s);
+		return false;
+	}
+
+	net_wakesocket = s;
+	return true;
+}
+
+void NET_WakeShutdown (void)
+{
+	if (net_wakesocket != INVALID_SOCKET)
+	{
+		closesocket(net_wakesocket);
+		net_wakesocket = INVALID_SOCKET;
+	}
+}
+
+void NET_Wake (void)
+{
+	socket_t s = net_wakesocket;
+
+	if (s != INVALID_SOCKET)
+		send(s, "", 1, 0); // when its buffer is full a wakeup is due anyway
+}
+#endif
+
 qbool NET_Sleep(int msec, qbool stdinissocket)
 {
 	struct timeval	timeout;
@@ -1577,6 +1654,14 @@ qbool NET_Sleep(int msec, qbool stdinissocket)
 		maxfd = max((int)svs.socketip6, maxfd);
 	}
 
+#ifdef WEBRTC
+	if (net_wakesocket != INVALID_SOCKET)
+	{
+		FD_SET(net_wakesocket, &fdset);
+		maxfd = max((int)net_wakesocket, maxfd);
+	}
+#endif
+
 	timeout.tv_sec = msec/1000;
 	timeout.tv_usec = (msec%1000)*1000;
 	switch (select(maxfd + 1, &fdset, NULL, NULL, &timeout))
@@ -1587,6 +1672,16 @@ qbool NET_Sleep(int msec, qbool stdinissocket)
 
 		if (stdinissocket)
 			stdin_ready = FD_ISSET (0, &fdset);
+
+#ifdef WEBRTC
+		if (net_wakesocket != INVALID_SOCKET && FD_ISSET(net_wakesocket, &fdset))
+		{
+			char drain[64];
+
+			while (recv(net_wakesocket, drain, sizeof(drain), 0) > 0)
+				;
+		}
+#endif
 
 		break;
 	}
