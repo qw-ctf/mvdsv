@@ -92,6 +92,76 @@ int Sys_remove (const char *path)
 	return unlink(path);
 }
 
+/*
+================
+Sys_TrustedCertificates
+
+Unix systems have no interface for these, only a file of them (OpenSSL's),
+at a place that varies between them; SSL_CERT_FILE names another, as for
+OpenSSL. On macOS, /etc/ssl/cert.pem holds the system's roots, but not those
+added to the keychain.
+================
+*/
+#define SYS_MAX_CERTIFICATES	(16 * 1024 * 1024)
+
+static char *Sys_ReadCertificates (const char *path)
+{
+	FILE *f;
+	long size;
+	char *text;
+
+	if (!(f = fopen(path, "rb")))
+		return NULL;
+	if (fseek(f, 0, SEEK_END) || (size = ftell(f)) <= 0 || size > SYS_MAX_CERTIFICATES || fseek(f, 0, SEEK_SET))
+	{
+		fclose(f);
+		return NULL;
+	}
+	text = (char *) Q_malloc(size + 1);
+	if (fread(text, 1, size, f) != (size_t) size)
+	{
+		fclose(f);
+		Q_free(text);
+		return NULL;
+	}
+	fclose(f);
+	text[size] = 0;
+	return text;
+}
+
+char *Sys_TrustedCertificates (const char **source)
+{
+	static const char *files[] = {
+		"/etc/ssl/certs/ca-certificates.crt",					// Debian, Ubuntu, Arch, Gentoo, Alpine
+		"/etc/pki/tls/certs/ca-bundle.crt",						// Fedora, RHEL
+		"/etc/ssl/ca-bundle.pem",								// openSUSE
+		"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",	// CentOS, RHEL 7
+		"/etc/ssl/cert.pem",									// macOS, the BSDs, Alpine
+		"/usr/local/share/certs/ca-root-nss.crt",				// FreeBSD's package
+		"/etc/openssl/certs/ca-certificates.crt",				// NetBSD
+	};
+	const char *file = getenv("SSL_CERT_FILE");
+	char *text;
+	int i;
+
+	if (file && file[0])
+	{
+		*source = file;
+		return Sys_ReadCertificates(file);
+	}
+
+	for (i = 0; i < (int) ARRAY_LEN(files); i++)
+	{
+		if ((text = Sys_ReadCertificates(files[i])))
+		{
+			*source = files[i];
+			return text;
+		}
+	}
+	*source = NULL;
+	return NULL;
+}
+
 //bliP: rmdir ->
 /*
 ================

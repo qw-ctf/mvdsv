@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "qwsvdef.h"
 #include <mmsystem.h>
 #include <io.h>
+#include <wincrypt.h>
 
 extern cvar_t sys_restart_on_error;
 extern cvar_t sys_select_timeout, sys_simulation;
@@ -141,6 +142,57 @@ Sys_remove
 int Sys_remove (const char *path)
 {
 	return remove(path);
+}
+
+/*
+================
+Sys_TrustedCertificates
+
+The ROOT store, as Windows checks TLS servers with: the user's, which takes in
+the machine's. Windows fetches more of its root program into it when a check
+needs one, so a root nothing on the machine has needed yet may be missing.
+================
+*/
+char *Sys_TrustedCertificates (const char **source)
+{
+	HCERTSTORE store;
+	PCCERT_CONTEXT cert = NULL;
+	DWORD length;
+	size_t size = 0, used = 0;
+	char *text = NULL;
+
+	*source = "the Windows certificate store";
+	if (!(store = CertOpenSystemStoreW(0, L"ROOT")))
+		return NULL;
+
+	// once to size them, once to write them out as PEM
+	while ((cert = CertEnumCertificatesInStore(store, cert)))
+	{
+		if (CryptBinaryToStringA(cert->pbCertEncoded, cert->cbCertEncoded, CRYPT_STRING_BASE64HEADER, NULL, &length))
+			size += length;
+	}
+	if (size)
+	{
+		text = (char *) Q_malloc(size + 1);
+		while ((cert = CertEnumCertificatesInStore(store, cert)))
+		{
+			// with the terminator, what it takes; skipped if the store grew
+			if (!CryptBinaryToStringA(cert->pbCertEncoded, cert->cbCertEncoded, CRYPT_STRING_BASE64HEADER, NULL, &length)
+				|| length > size + 1 - used)
+				continue;
+			if (CryptBinaryToStringA(cert->pbCertEncoded, cert->cbCertEncoded, CRYPT_STRING_BASE64HEADER, text + used, &length))
+				used += length;
+		}
+		text[used] = 0;
+	}
+	CertCloseStore(store, 0);
+
+	if (!used)
+	{
+		Q_free(text);
+		return NULL;
+	}
+	return text;
 }
 
 //bliP: rmdir ->

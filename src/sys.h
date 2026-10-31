@@ -93,6 +93,12 @@ void Sys_Sleep (unsigned long ms);
 
 int Sys_Script (const char *path, const char *args);
 
+// The certificates of the certificate authorities the system trusts, as PEM
+// text (Q_malloc'd), for TLS libraries such as Mbed TLS that cannot find them
+// themselves. NULL if there are none; *source says where they are from, or
+// where none were found (NULL for none of the usual places).
+char *Sys_TrustedCertificates (const char **source);
+
 #define ARRAY_LEN(x)		(sizeof(x) / sizeof(*(x)))
 
 

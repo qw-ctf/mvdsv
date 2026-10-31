@@ -169,6 +169,7 @@ if(UNIX)
 else()
 	target_link_libraries(${PROJECT_NAME} ws2_32)
 	target_link_libraries(${PROJECT_NAME} winmm)
+	target_link_libraries(${PROJECT_NAME} crypt32) # Sys_TrustedCertificates
 	if(NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 		target_link_options(${PROJECT_NAME} PRIVATE -static-libgcc)
 	endif()
