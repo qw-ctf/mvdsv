@@ -612,6 +612,26 @@ void FS_ShutDown( void )
 
 /*
 ================
+FS_RemoveBaseFile
+
+Removes a file of the base directory, named as for FS_OpenVFS(..., FS_BASE_OS).
+================
+*/
+qbool FS_RemoveBaseFile(const char *filename)
+{
+	char cleanname[MAX_OSPATH];
+	char fullname[MAX_OSPATH];
+
+	if (!(filename = FS_GetCleanPath(filename, cleanname, sizeof(cleanname))))
+		return false;
+	// a path cut short could name another file
+	if (snprintf(fullname, sizeof(fullname), "%s/%s", fs_basedir, filename) >= (int) sizeof(fullname))
+		return false;
+	return Sys_remove(fullname) == 0;
+}
+
+/*
+================
 FS_OpenVFS
 
 This should be how all files are opened.
